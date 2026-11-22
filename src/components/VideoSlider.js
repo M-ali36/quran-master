@@ -44,7 +44,7 @@ export default function VideoSlider({ videos }) {
   const isCurrentVideoLoading = !loadedVideos[currentIndex];
 
   return (
-    <div className="relative min-h-screen w-full overflow-hidden bg-slate-950">
+    <div className="relative h-full min-h-screen w-full overflow-hidden bg-slate-950">
       {/* 1. Loading Indicator Overlay */}
       <div
         className={`absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-950/70 backdrop-blur-xs transition-opacity duration-700 pointer-events-none ${
@@ -77,7 +77,7 @@ export default function VideoSlider({ videos }) {
               preload="auto"
               src={videoSrc}
               onCanPlay={() => handleVideoLoaded(idx)}
-              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-in-out ${
+              className={`min-h-full absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-in-out ${
                 isActive && isReady ? "opacity-100" : "opacity-0"
               }`}
             />
