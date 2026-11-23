@@ -104,7 +104,7 @@ export default function Content() {
       : surahInfo?.type;
 
   return (
-    <section className="w-full min-h-64 frosted-card rounded-[20px] p-6 lg:p-12 flex flex-col items-center justify-center gap-6">
+    <section className="mt-auto w-full min-h-64 frosted-card rounded-[20px] p-6 lg:p-12 flex flex-col items-center justify-center gap-6">
       {/* Meta Bar */}
       <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-5 text-xs sm:text-sm text-slate-600 bg-white/70 backdrop-blur-xs px-5 py-2.5 rounded-2xl border border-slate-200 shadow-xs">
         <div>
@@ -187,7 +187,7 @@ export default function Content() {
             {/* Arabic Text */}
             <p
               dir="rtl"
-              className="text-2xl sm:text-3xl leading-[2.2] text-black font-serif px-2"
+              className="text-2xl font-amiri-quran sm:text-3xl leading-[2.2] text-black px-2"
             >
               {ayaData.text?.ar}
             </p>

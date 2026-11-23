@@ -10,14 +10,9 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-amiri-quran: var(--font-amiri-quran), serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
 
 body {
   background: var(--background);
@@ -26,7 +21,7 @@ body {
 }
 
 .bggr {
-  mask: linear-gradient(0deg,transparent 0%, rgba(0, 0, 0, 1) 14%, rgba(0, 0, 0, 0) 100%);
+  mask: linear-gradient(180deg,transparent 0%, rgba(0, 0, 0, 1) 85%, rgba(0, 0, 0, 1) 100%);
   backdrop-filter: blur(8px);
 }
 

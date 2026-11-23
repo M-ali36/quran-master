@@ -3,35 +3,70 @@ import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import Navbar from "@/components/Navbar";
 import VideoSlider from "@/components/VideoSlider";
-import Image from "next/image";
+import InstallPrompt from "@/components/InstallPrompt";
+import { Amiri_Quran } from "next/font/google";
+
+const amiriQuran = Amiri_Quran({
+  weight: "400",
+  subsets: ["arabic"],
+  display: "swap",
+  variable: "--font-amiri-quran",
+});
 
 export const metadata = {
-  title: "App with Firebase & Localization",
-  description: "Next.js open guest app with Google Auth sync to Firestore",
+  title: "HiSaja | Quran Memorization & Audio Player",
+  description: "Listen, repeat, and memorize the Holy Quran with offline audio support.",
+  manifest: "/manifest.webmanifest",
+  applicationName: "HiSaja",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "HiSaja",
+  },
+  formatDetection: {
+    telephone: false,
+  },
+  icons: {
+    icon: [
+      { url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [
+      { url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" },
+    ],
+  },
+};
+
+export const viewport = {
+  themeColor: "#0f172a",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" dir="ltr" suppressHydrationWarning>
+    <html lang="en" dir="ltr" suppressHydrationWarning className={amiriQuran.variable}>
+      <head>
+        <meta name="mobile-web-app-capable" content="yes" />
+      </head>
       <body className="min-h-screen bg-slate-50 text-slate-900 antialiased relative flex flex-col">
         <LanguageProvider>
           <AuthProvider>
-            <span className="absolute h-full w-full left-0 top-0 bg-[#becfd9] flex justify-center items-center">
-              {/*<Image
-                src="/images/bg.png"
-                alt="User Avatar"
-                width={2048}
-                height={2048}
-                priority // Add priority if the image is above the fold (e.g., in a navbar or hero)
-                className="max-h-full w-auto absolute mix-blend-multiply"
-              />*/}
+            <span className="pointer-events-none absolute h-full w-full left-0 top-0 bg-[#becfd9] flex justify-center items-center overflow-hidden">
               <VideoSlider />
-              <span className="absolute  h-full w-full top-0 left-0 bg-gradient-to-t from-slate-400/60 to-slate-400/0 bggr"></span>
+              <span className="absolute h-full w-full top-0 left-0 bg-gradient-to-t from-slate-400/60 to-slate-400/0 bggr"></span>
             </span>
+
             <Navbar />
-            <main className="flex-1 w-full px-4 lg:px-32 mx-auto px-4 py-8 relative z-[1]">
+
+            <main className="flex flex-col flex-1 w-full px-4 lg:px-32 mx-auto py-8 relative z-10">
               {children}
             </main>
+
+            {/* PWA installation banner listener */}
+            <InstallPrompt />
           </AuthProvider>
         </LanguageProvider>
       </body>

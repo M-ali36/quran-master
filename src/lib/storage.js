@@ -1,95 +1,89 @@
+// src/lib/storage.js
 import { db } from "@/lib/firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
-const GUEST_KEY = "guest_app_data";
+const GUEST_STORAGE_KEY = "guest_app_data";
 
 export const storage = {
-  // Read local guest data
-  getGuestData: () => {
-    if (typeof window === "undefined") return null;
+  getGuestData() {
+    if (typeof window === "undefined") return { appData: {} };
     try {
-      const data = localStorage.getItem(GUEST_KEY);
-      return data ? JSON.parse(data) : null;
+      const stored = localStorage.getItem(GUEST_STORAGE_KEY);
+      return stored ? JSON.parse(stored) : { appData: {} };
     } catch {
+      return { appData: {} };
+    }
+  },
+
+  setGuestData(data) {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(data));
+    } catch (err) {
+      console.error("Local storage error:", err);
+    }
+  },
+
+  async getUserDoc(user) {
+    if (!user || !user.uid) return null;
+    const userRef = doc(db, "users", user.uid);
+
+    try {
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        return snap.data();
+      }
+
+      const initialDoc = {
+        uid: user.uid,
+        email: user.email || "",
+        displayName: user.displayName || "",
+        photoURL: user.photoURL || "",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        appData: {},
+      };
+
+      await setDoc(userRef, initialDoc, { merge: true });
+      return initialDoc;
+    } catch (err) {
+      console.error("Firestore getUserDoc error:", err);
       return null;
     }
   },
 
-  // Save local guest data
-  setGuestData: (data) => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem(GUEST_KEY, JSON.stringify(data));
-  },
-
-  // Clear guest data
-  clearGuestData: () => {
-    if (typeof window === "undefined") return;
-    localStorage.removeItem(GUEST_KEY);
-  },
-
-  // Create or retrieve user document by UID
-  getUserDoc: async (user) => {
-    if (!user?.uid) return null;
-    const docRef = doc(db, "users", user.uid);
-    const snapshot = await getDoc(docRef);
-
-    if (snapshot.exists()) {
-      return snapshot.data();
-    }
-
-    // Initialize document with Google profile details if new user
-    const guestData = storage.getGuestData() || {};
-    const initialUserData = {
-      uid: user.uid,
-      displayName: user.displayName || "",
-      email: user.email || "",
-      photoURL: user.photoURL || "",
-      appData: guestData.appData || {},
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-
-    await setDoc(docRef, initialUserData, { merge: true });
-    storage.clearGuestData();
-    return initialUserData;
-  },
-
-  // Update appData under the user's UID document
-  saveUserAppData: async (uid, appData) => {
+  async saveUserAppData(uid, appData) {
     if (!uid) return;
+    const userRef = doc(db, "users", uid);
+
     try {
-      const docRef = doc(db, "users", uid);
       await setDoc(
-        docRef,
+        userRef,
         {
+          uid,
           appData,
           updatedAt: serverTimestamp(),
         },
         { merge: true }
       );
     } catch (err) {
-      console.error("Firestore write error:", err);
+      console.error("Firestore saveUserAppData error:", err);
+      throw err;
     }
   },
 
-  // Migrate guest data to existing profile upon sign-in
-  syncGuestDataToUser: async (uid) => {
-    const guestData = storage.getGuestData();
-    if (!guestData || !guestData.appData) return;
-
-    try {
-      const docRef = doc(db, "users", uid);
-      await setDoc(
-        docRef,
-        {
-          appData: guestData.appData,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-      storage.clearGuestData();
-    } catch (err) {
-      console.error("Guest migration error:", err);
+  async syncGuestDataToUser(uid) {
+    if (!uid) return;
+    const guestData = this.getGuestData();
+    if (guestData?.appData && Object.keys(guestData.appData).length > 0) {
+      try {
+        await this.saveUserAppData(uid, guestData.appData);
+        if (typeof window !== "undefined") {
+          localStorage.removeItem(GUEST_STORAGE_KEY);
+        }
+      } catch (err) {
+        console.error("Failed to sync guest data:", err);
+      }
     }
   },
 };
