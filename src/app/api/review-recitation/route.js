@@ -1,114 +1,167 @@
 // src/app/api/review-recitation/route.js
-import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
+import { NextResponse } from 'next/server';
+import { GoogleGenAI } from '@google/genai';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-export async function POST(request) {
+// دالة التوليد المعتمدة لديك مع نظام إعادة المحاولة والموديل البديل
+async function generateRecitationReview(
+  audioPart,
+  promptText,
+  systemInstruction
+) {
+  const models = ['gemini-3.8-flash', 'gemini-2.5-pro'];
+  let lastError = null;
+
+  for (const model of models) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                audioPart,
+                { text: promptText },
+              ],
+            },
+          ],
+          config: {
+            systemInstruction,
+            temperature: 0.2,
+          },
+        });
+
+        return response.text || '';
+      } catch (err) {
+        lastError = err;
+        console.warn(`Attempt ${attempt} on ${model} failed:`, err?.message || err);
+
+        // إذا كان الخطأ 503 (ضغط على السيرفر) انتظر وجرب مرة أخرى
+        if (
+          err?.status === 503 ||
+          err?.message?.includes('high demand') ||
+          err?.message?.includes('UNAVAILABLE')
+        ) {
+          await new Promise((res) => setTimeout(res, 1200 * attempt));
+          continue;
+        }
+
+        // لأي خطأ آخر، انتقل فوراً للموديل البديل
+        break;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+export async function POST(req) {
   try {
-    const formData = await request.formData();
-    const audioFile = formData.get("audio");
-    const targetVersesText = formData.get("targetVersesText");
-    const surahName = formData.get("surahName");
-    const startAya = formData.get("startAya");
-    const endAya = formData.get("endAya");
-    const lang = formData.get("lang") || "ar";
+    const formData = await req.formData();
+    const audioFile = formData.get('audio');
+    const targetVersesText = formData.get('targetVersesText');
+    const surahName = formData.get('surahName') || '';
+    const startAya = formData.get('startAya') || '1';
+    const endAya = formData.get('endAya') || '1';
+    const lang = formData.get('lang') || 'ar';
 
     if (!audioFile || !targetVersesText) {
       return NextResponse.json(
-        { error: lang === "ar" ? "الملف الصوتي ونصوص الآيات مطلوبة" : "Audio file and verses text are required" },
+        {
+          error:
+            lang === 'ar'
+              ? 'الملف الصوتي ونصوص الآيات مطلوبة'
+              : 'Audio file and verses text are required',
+        },
         { status: 400 }
       );
     }
 
+    // تجهيز الصوت بصيغة Base64
     const audioBytes = await audioFile.arrayBuffer();
-    const base64Audio = Buffer.from(audioBytes).toString("base64");
-    const mimeType = audioFile.type || "audio/webm";
+    const base64Audio = Buffer.from(audioBytes).toString('base64');
+    let mimeType = audioFile.type || 'audio/webm';
+    if (mimeType.includes(';')) {
+      mimeType = mimeType.split(';')[0].trim();
+    }
 
-    // تكييف الـ Prompt حسب اللغة المختارة
-    const isAr = lang === "ar";
-    const prompt = isAr
-      ? `
-أنت معلم قرآن كريم ومصحح تلاوة معتمد.
-المستخدم قرأ تلاوة صوتية لمجموعة من الآيات من سورة ${surahName} (من الآية ${startAya} إلى الآية ${endAya}).
-النص القرآني الصحيح المعتمد المطلوب هو:
+    const audioPart = {
+      inlineData: {
+        mimeType: mimeType || 'audio/webm',
+        data: base64Audio,
+      },
+    };
+
+    const isAr = lang === 'ar';
+
+    const systemInstruction = isAr
+      ? 'أنت معلم قرآن كريم ومصحح تلاوة معتمد. مهمتك فحص التلاوة الصوتية مقارنة بالنص القرآني، واكتشاف أخطاء الحفظ وتغيير الكلمات واللحن الجلي في التشكيل، والرد بصيغة JSON نظيفة فقط.'
+      : 'You are an expert Quran recitation reviewer and teacher. Evaluate the spoken recitation against the target Quranic text, detect mistakes, and return strictly a valid JSON object.';
+
+    const promptText = isAr
+      ? `السورة: ${surahName} (من الآية ${startAya} إلى الآية ${endAya}).
+النص القرآني المعتمد المطلوب:
 """
 ${targetVersesText}
 """
 
-مهمتك:
-1. استمع للتسجيل الصوتي بدقة وقارنه بالآيات المطلوبة.
-2. احسب نسبة صحة الحفظ والدقة (Score من 100).
-3. رصّد أي أخطاء في الحفظ (كلمات سقطت، كلمات أُبدلت، كلمات زائدة).
-4. رصّد أي لحن جلي في التشكيل والحركات الإعرابية الصريحة.
-5. قدّم نصيحة تجويدية موجزة.
-
-أجب فقط بصيغة JSON نظيفة بدون Markdown (بدون \`\`\`json):
+استمع للملف الصوتي بدقة وقارنه بالنص المعتمد أعلاه.
+أخرج كائن JSON فقط بدون أي علامات markdown أو كود خارجي:
 {
-  "score": 92,
+  "score": 90,
   "status": "ممتاز / جيد جداً / يحتاج مراجعة",
-  "transcribedText": "النص المكتوب كما قاله المستخدم بدقة",
+  "transcribedText": "النص المنطوق كما سُمع",
   "mistakes": [
-    { "word": "الكلمة كما قرأها", "correction": "الكلمة الصحيحة", "reason": "خطأ في الحركة / كلمة منسية" }
+    { "word": "الكلمة المنطوقة", "correction": "الكلمة الصحيحة", "reason": "سبب الخطأ" }
   ],
-  "feedback": "ملاحظة تشجيعية موجزة ونصيحة تجويدية باللغة العربية"
-}
-`
-      : `
-You are a certified Quran teacher and recitation examiner.
-The user recited verses from Surah ${surahName} (from verse ${startAya} to ${endAya}).
-The verified Quranic text is:
+  "feedback": "ملاحظة تشجيعية وتوجيه تجويدي"
+}`
+      : `Surah: ${surahName} (from verse ${startAya} to verse ${endAya}).
+Verified Target Quranic Text:
 """
 ${targetVersesText}
 """
 
-Task:
-1. Listen closely to the audio recitation and compare it against the target verses.
-2. Calculate the memorization and recitation accuracy score (0-100).
-3. Identify mistakes (skipped words, altered words, extra words).
-4. Identify obvious vocalization/tashkeel errors (Lahn Jali).
-5. Give a concise pedagogical and tajweed tip in English.
-
-Respond strictly in clean JSON with no Markdown code fences:
+Listen to the audio recitation and compare it against the target verses.
+Output strictly a JSON object with this exact structure:
 {
-  "score": 92,
+  "score": 90,
   "status": "Excellent / Very Good / Needs Review",
-  "transcribedText": "Transcribed text as recited by the user",
+  "transcribedText": "Transcribed spoken text",
   "mistakes": [
-    { "word": "recited word", "correction": "correct word", "reason": "Tashkeel error / Skipped word" }
+    { "word": "spoken word", "correction": "correct word", "reason": "reason for mistake" }
   ],
-  "feedback": "Encouraging remark and concise tajweed tip in English"
-}
-`;
+  "feedback": "Encouraging remark and concise tajweed tip"
+}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: mimeType,
-                data: base64Audio,
-              },
-            },
-          ],
-        },
-      ],
-    });
+    // تشغيل التوليد عبر دالة الـ Fallback والـ Retry
+    const rawResult = await generateRecitationReview(
+      audioPart,
+      promptText,
+      systemInstruction
+    );
 
-    const responseText = response.text?.trim() || "{}";
-    const cleanJson = responseText.replace(/^```json\s*/, "").replace(/\s*```$/, "");
-    const result = JSON.parse(cleanJson);
+    // تنظيف استجابة الـ JSON
+    const cleanJson = (rawResult || '')
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
 
-    return NextResponse.json(result);
+    const jsonResult = JSON.parse(cleanJson);
+    return NextResponse.json(jsonResult);
   } catch (error) {
-    console.error("Quran Review API Error:", error);
+    console.error('Quran Review API Error:', error);
     return NextResponse.json(
-      { error: "Failed to evaluate recitation" },
-      { status: 500 }
+      {
+        error:
+          error?.status === 503 || error?.message?.includes('high demand')
+            ? 'الخدمة تواجه ضغطاً كبيراً حالياً، يرجى إعادة المحاولة بعد لحظات.'
+            : error?.message || 'Failed to evaluate recitation',
+      },
+      { status: error?.status || 500 }
     );
   }
 }

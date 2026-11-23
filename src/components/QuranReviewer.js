@@ -23,6 +23,7 @@ export default function QuranReviewer() {
   const [audioBlob, setAudioBlob] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluationResult, setEvaluationResult] = useState(null);
+  const [errorMessage, setErrorMessage] = useState("");
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -63,7 +64,6 @@ export default function QuranReviewer() {
           const mod = await import(`@/data/verses/${suraPadded}_${ayaPadded}.json`);
           const verseJson = mod.default || mod;
 
-          // Always extract Arabic Quranic text from text.ar
           const arabicText =
             typeof verseJson.text === "object"
               ? verseJson.text?.ar || ""
@@ -115,12 +115,17 @@ export default function QuranReviewer() {
       setIsRecording(true);
       setRecordingTime(0);
       setEvaluationResult(null);
+      setErrorMessage("");
 
       timerRef.current = setInterval(() => {
         setRecordingTime((prev) => prev + 1);
       }, 1000);
     } catch {
-      alert(isRtl ? "يرجى السماح بالوصول إلى الميكروفون" : "Microphone access is required");
+      setErrorMessage(
+        isRtl
+          ? "تعذر الوصول للميكروفون. يرجى التأكد من منح الإذن للمتصفح."
+          : "Microphone access denied. Please grant permission in your browser."
+      );
     }
   };
 
@@ -137,6 +142,9 @@ export default function QuranReviewer() {
     if (!audioBlob) return;
 
     setIsEvaluating(true);
+    setErrorMessage("");
+    setEvaluationResult(null);
+
     const combinedVerses = targetVerses.map((v) => `(${v.aya}) ${v.text}`).join(" ");
 
     const formData = new FormData();
@@ -157,6 +165,16 @@ export default function QuranReviewer() {
       });
 
       const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Server failed to evaluate recitation");
+      }
+
+      // Check if response contains valid structured score
+      if (typeof data.score === "undefined") {
+        throw new Error("No response or invalid evaluation received from AI.");
+      }
+
       setEvaluationResult(data);
 
       const newReviewEntry = {
@@ -178,7 +196,11 @@ export default function QuranReviewer() {
       });
     } catch (err) {
       console.error("Evaluation error:", err);
-      alert(isRtl ? "حدث خطأ أثناء تقييم التلاوة" : "Failed to evaluate recitation");
+      setErrorMessage(
+        isRtl
+          ? "حدث خطأ أثناء الاتصال بالذكاء الاصطناعي أو أن السيرفر يواجه ضغطاً مؤقتاً. يرجى المحاولة مرة أخرى."
+          : "There was an issue reaching the AI reviewer or the model is temporarily busy. Please try again."
+      );
     } finally {
       setIsEvaluating(false);
     }
@@ -217,6 +239,7 @@ export default function QuranReviewer() {
               setStartAya(1);
               setEndAya(Math.min(5, surahs.find((s) => parseInt(s.index, 10) === val)?.count || 5));
               setEvaluationResult(null);
+              setErrorMessage("");
               setAudioBlob(null);
             }}
             className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800"
@@ -258,7 +281,7 @@ export default function QuranReviewer() {
         </div>
       </div>
 
-      {/* Target Quranic Text Preview (Arabic Script Only) */}
+      {/* Target Quranic Text Preview */}
       <div className="p-4 bg-amber-50/40 border border-amber-200/60 rounded-xl max-h-56 overflow-y-auto">
         <span className="text-[10px] uppercase font-bold text-amber-700 block mb-2">
           {isRtl ? "النص القرآني المطلوب تسميعه:" : "Target Quranic Text to Recite:"}
@@ -325,6 +348,43 @@ export default function QuranReviewer() {
           )}
         </div>
       </div>
+
+      {/* Error / No-Response Alert Message */}
+      {errorMessage && (
+        <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 flex items-start justify-between gap-3 text-rose-800 animate-in fade-in duration-200">
+          <div className="flex items-start gap-2.5">
+            <svg
+              className="w-5 h-5 text-rose-500 shrink-0 mt-0.5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fillRule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                clipRule="evenodd"
+              />
+            </svg>
+            <div className="flex flex-col">
+              <span className="text-xs font-bold">
+                {isRtl ? "تعذر إكمال التقييم" : "Evaluation Error"}
+              </span>
+              <span className="text-xs text-rose-700 mt-0.5 leading-relaxed">
+                {errorMessage}
+              </span>
+            </div>
+          </div>
+
+          {audioBlob && !isEvaluating && (
+            <button
+              type="button"
+              onClick={handleEvaluate}
+              className="shrink-0 px-3 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg transition active:scale-95 cursor-pointer"
+            >
+              {isRtl ? "إعادة المحاولة" : "Retry"}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Evaluation Results */}
       {evaluationResult && (
