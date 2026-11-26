@@ -6,6 +6,7 @@ export const en = {
     saveCloud: "Save Progress",
     signOut: "Sign Out",
     switchLang: "العربية",
+    switchLangM: "ع"
   },
   home: {
     welcome: "Welcome",

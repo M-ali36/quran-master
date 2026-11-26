@@ -181,7 +181,8 @@ export default function Navbar() {
             onClick={toggleLanguage}
             className="px-4 py-2 text-xs lg:text-sm font-semibold rounded-full bg-white text-black transition cursor-pointer"
           >
-            {t.navbar.switchLang}
+            <span className="hidden lg:block">{t.navbar.switchLang}</span>
+            <span className="lg:hidden">{t.navbar.switchLangM}</span>
           </button>
 
           {/* User Settings Dropdown / Guest Status */}

@@ -28,6 +28,7 @@ export default function QuranReviewer() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
+  const audioStreamRef = useRef(null);
 
   // 1. Load surahs list
   useEffect(() => {
@@ -40,6 +41,13 @@ export default function QuranReviewer() {
       }
     }
     loadSurahs();
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
   }, []);
 
   const activeSurah = useMemo(() => {
@@ -49,7 +57,7 @@ export default function QuranReviewer() {
 
   const maxAyas = activeSurah?.count || 7;
 
-  // 2. Load selected verses using 3-digit padded filenames (e.g. 096_001.json)
+  // 2. Load selected verses using 3-digit padded filenames
   useEffect(() => {
     let isMounted = true;
 
@@ -97,6 +105,7 @@ export default function QuranReviewer() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
       audioChunksRef.current = [];
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
@@ -109,6 +118,7 @@ export default function QuranReviewer() {
         const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         setAudioBlob(blob);
         stream.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
       };
 
       recorder.start();
@@ -170,7 +180,6 @@ export default function QuranReviewer() {
         throw new Error(data.error || "Server failed to evaluate recitation");
       }
 
-      // Check if response contains valid structured score
       if (typeof data.score === "undefined") {
         throw new Error("No response or invalid evaluation received from AI.");
       }
@@ -187,7 +196,7 @@ export default function QuranReviewer() {
         lang,
         score: data.score || 0,
         status: data.status || "",
-        feedback: data.feedback || "",
+        feedback: data.generalFeedback || data.feedback || "",
       };
 
       const existingHistory = appData?.recitationHistory || [];
@@ -198,7 +207,7 @@ export default function QuranReviewer() {
       console.error("Evaluation error:", err);
       setErrorMessage(
         isRtl
-          ? "حدث خطأ أثناء الاتصال بالذكاء الاصطناعي أو أن السيرفر يواجه ضغطاً مؤقتاً. يرجى المحاولة مرة أخرى."
+          ? "حدث خطأ أثناء فحص التلاوة أو أن السيرفر يواجه ضغطاً مؤقتاً. يرجى إعادة المحاولة."
           : "There was an issue reaching the AI reviewer or the model is temporarily busy. Please try again."
       );
     } finally {
@@ -212,16 +221,16 @@ export default function QuranReviewer() {
       <div className="flex items-center justify-between border-b border-slate-100 pb-4">
         <div>
           <h2 className="text-base font-bold text-slate-900">
-            {isRtl ? "مُراجع التلاوة الذكي" : "AI Recitation Reviewer"}
+            {isRtl ? "مُراجع التلاوة والتدقيق التجويدي" : "AI Quran Recitation & Tajweed Auditor"}
           </h2>
           <p className="text-xs text-slate-500">
             {isRtl
-              ? "اختر الآيات واقرأها بصوتك وسيقوم النموذج بفحص صحة حفظك وحركاتك"
-              : "Select verses, recite into your mic, and receive recitation accuracy feedback"}
+              ? "تحقيق دقيق في الحفظ، علامات الإعراب، وأحكام التجويد مع نصائح توجيهية"
+              : "Strict verification of memorization, diacritics, and tajweed rules"}
           </p>
         </div>
-        <span className="px-2.5 py-1 text-[11px] font-semibold bg-indigo-50 text-indigo-700 rounded-full border border-indigo-100">
-          Gemini Flash
+        <span className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
+          {isRtl ? "رواية حفص عن عاصم" : "Hafs an Asim"}
         </span>
       </div>
 
@@ -284,7 +293,7 @@ export default function QuranReviewer() {
       {/* Target Quranic Text Preview */}
       <div className="p-4 bg-amber-50/40 border border-amber-200/60 rounded-xl max-h-56 overflow-y-auto">
         <span className="text-[10px] uppercase font-bold text-amber-700 block mb-2">
-          {isRtl ? "النص القرآني المطلوب تسميعه:" : "Target Quranic Text to Recite:"}
+          {isRtl ? "النص القرآني المعتمد المطلوب:" : "Target Quranic Text to Recite:"}
         </span>
         {isLoadingVerses ? (
           <p className="text-xs text-slate-400 animate-pulse">
@@ -306,15 +315,15 @@ export default function QuranReviewer() {
 
       {/* Recording Actions */}
       <div className="flex flex-col items-center justify-center gap-4 py-2">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-center gap-4">
           {!isRecording ? (
             <button
               type="button"
               onClick={startRecording}
               className="flex items-center gap-2 px-6 py-3 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-full shadow-md transition active:scale-95 cursor-pointer"
             >
-              <span className="w-3 h-3 rounded-full bg-white animate-ping" />
-              <span>{isRtl ? "بدء التسجيل والتسميع" : "Start Recording"}</span>
+              <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" />
+              <span>{isRtl ? "بدء التسميع والتسجيل" : "Start Reciting"}</span>
             </button>
           ) : (
             <button
@@ -322,7 +331,7 @@ export default function QuranReviewer() {
               onClick={stopRecording}
               className="flex items-center gap-2 px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-full shadow-md transition active:scale-95 cursor-pointer"
             >
-              <span className="w-3 h-3 bg-rose-500 rounded-xs" />
+              <span className="w-2.5 h-2.5 bg-rose-500 rounded-xs" />
               <span>
                 {isRtl ? "إيقاف التسجيل" : "Stop Recording"} ({recordingTime}s)
               </span>
@@ -339,25 +348,21 @@ export default function QuranReviewer() {
               {isEvaluating ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>{isRtl ? "جاري التقييم بواسطة الذكاء الاصطناعي..." : "Evaluating..."}</span>
+                  <span>{isRtl ? "جاري التدقيق الحرفي والتجويدي..." : "Auditing Recitation..."}</span>
                 </>
               ) : (
-                <span>{isRtl ? "إرسال للمراجعة والتقييم" : "Submit for Evaluation"}</span>
+                <span>{isRtl ? "إرسال للتحكيم والتدقيق" : "Submit for Evaluation"}</span>
               )}
             </button>
           )}
         </div>
       </div>
 
-      {/* Error / No-Response Alert Message */}
+      {/* Error Alert Message */}
       {errorMessage && (
-        <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 flex items-start justify-between gap-3 text-rose-800 animate-in fade-in duration-200">
+        <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 flex items-start justify-between gap-3 text-rose-800">
           <div className="flex items-start gap-2.5">
-            <svg
-              className="w-5 h-5 text-rose-500 shrink-0 mt-0.5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
+            <svg className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
               <path
                 fillRule="evenodd"
                 d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
@@ -366,11 +371,9 @@ export default function QuranReviewer() {
             </svg>
             <div className="flex flex-col">
               <span className="text-xs font-bold">
-                {isRtl ? "تعذر إكمال التقييم" : "Evaluation Error"}
+                {isRtl ? "تنبيه" : "Evaluation Notice"}
               </span>
-              <span className="text-xs text-rose-700 mt-0.5 leading-relaxed">
-                {errorMessage}
-              </span>
+              <span className="text-xs text-rose-700 mt-0.5">{errorMessage}</span>
             </div>
           </div>
 
@@ -388,16 +391,19 @@ export default function QuranReviewer() {
 
       {/* Evaluation Results */}
       {evaluationResult && (
-        <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col gap-3 animate-in fade-in duration-300">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-            <span className="text-xs font-bold text-slate-700">
-              {isRtl ? "نتيجة التقييم" : "Evaluation Result"}
+        <div className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 flex flex-col gap-4 animate-in fade-in duration-300">
+          {/* Status Header */}
+          <div className="flex items-center justify-between border-b border-slate-200/80 pb-3">
+            <span className="text-xs font-bold text-slate-800">
+              {isRtl ? "تقرير التحكيم والتقييم" : "Evaluation Report"}
             </span>
             <span
-              className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
-                evaluationResult.score >= 85
+              className={`text-xs px-3 py-1 rounded-full font-bold ${
+                evaluationResult.score >= 90
                   ? "bg-emerald-100 text-emerald-800"
-                  : evaluationResult.score >= 65
+                  : evaluationResult.score >= 75
+                  ? "bg-blue-100 text-blue-800"
+                  : evaluationResult.score >= 60
                   ? "bg-amber-100 text-amber-800"
                   : "bg-rose-100 text-rose-800"
               }`}
@@ -406,33 +412,107 @@ export default function QuranReviewer() {
             </span>
           </div>
 
-          <p className="text-xs text-slate-600 leading-relaxed">
-            {evaluationResult.feedback}
-          </p>
-
-          {evaluationResult.mistakes && evaluationResult.mistakes.length > 0 ? (
-            <div className="flex flex-col gap-1.5 pt-2">
-              <span className="text-[11px] font-bold text-rose-600">
-                {isRtl ? "الملاحظات ومواضع الخطأ:" : "Detected Mistakes:"}
+          {/* Transcribed Text Detected by AI */}
+          {evaluationResult.transcribedText && (
+            <div className="p-3 bg-white rounded-xl border border-slate-200/80 flex flex-col gap-1">
+              <span className="text-[11px] font-bold text-slate-500">
+                {isRtl ? "النص المنطوق كما سُمع بالتشكيل:" : "Spoken Text as Heard:"}
               </span>
-              <div className="divide-y divide-slate-200/70 border border-slate-200 rounded-lg bg-white overflow-hidden">
+              <p
+                className="text-sm font-['Amiri_Quran',_serif] text-slate-800 leading-relaxed text-right"
+                dir="rtl"
+              >
+                {evaluationResult.transcribedText}
+              </p>
+            </div>
+          )}
+
+          {/* General Feedback */}
+          <div className="text-xs text-slate-700 leading-relaxed bg-indigo-50/60 p-3 rounded-xl border border-indigo-100">
+            {evaluationResult.generalFeedback || evaluationResult.feedback}
+          </div>
+
+          {/* Detected Mistakes List */}
+          {evaluationResult.mistakes && evaluationResult.mistakes.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-bold text-rose-600 flex items-center gap-1">
+                <span>⚠️</span>
+                <span>{isRtl ? "الأخطاء المرصودة واللحن:" : "Identified Mistakes:"}</span>
+              </span>
+              <div className="flex flex-col gap-2">
                 {evaluationResult.mistakes.map((m, idx) => (
-                  <div key={idx} className="p-2 text-xs flex items-center justify-between">
-                    <div>
-                      <span className="line-through text-rose-500 font-semibold">{m.word}</span>
-                      <span className="mx-2 text-slate-400">←</span>
-                      <span className="text-emerald-600 font-semibold">{m.correction}</span>
+                  <div
+                    key={idx}
+                    className="p-3 text-xs bg-white border border-rose-100 rounded-xl flex flex-col gap-1.5 shadow-2xs"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="line-through text-rose-600 font-bold font-['Amiri_Quran',_serif] text-sm">
+                          {m.wordSpoken || m.word}
+                        </span>
+                        <span className="text-slate-400 font-sans">←</span>
+                        <span className="text-emerald-700 font-bold font-['Amiri_Quran',_serif] text-sm">
+                          {m.wordCorrect || m.correction}
+                        </span>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 font-semibold bg-rose-50 text-rose-700 rounded-md border border-rose-200/60">
+                        {m.type || m.reason || (isRtl ? "لحن" : "Mistake")}
+                      </span>
                     </div>
-                    <span className="text-[10px] text-slate-400">{m.reason}</span>
+
+                    {m.explanation && (
+                      <p className="text-[11px] text-slate-600">
+                        <strong className="text-slate-800">{isRtl ? "السبب: " : "Why: "}</strong>
+                        {m.explanation}
+                      </p>
+                    )}
+
+                    {m.howToFix && (
+                      <p className="text-[11px] text-emerald-800 bg-emerald-50/70 p-2 rounded-lg border border-emerald-100">
+                        <strong>{isRtl ? "💡 كيف تصححها: " : "💡 How to Fix: "}</strong>
+                        {m.howToFix}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
           ) : (
-            <div className="p-2.5 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-semibold">
-              {isRtl
-                ? "ما شاء الله، قراءة خالية من الأخطاء الجلية في الحفظ."
-                : "Flawless recitation! No major memorization mistakes detected."}
+            <div className="p-3 bg-emerald-50 text-emerald-800 rounded-xl text-xs font-semibold border border-emerald-200/60 flex items-center gap-2">
+              <span>✓</span>
+              <span>
+                {isRtl
+                  ? "ما شاء الله، قراءة متقنة خالية من الأخطاء في الكلمات والحركات."
+                  : "Excellent! No major mispronunciations or diacritic errors detected."}
+              </span>
+            </div>
+          )}
+
+          {/* Tajweed Observations */}
+          {evaluationResult.tajweedObservations && evaluationResult.tajweedObservations.length > 0 && (
+            <div className="flex flex-col gap-1.5 p-3 bg-white rounded-xl border border-slate-200/80">
+              <span className="text-[11px] font-bold text-indigo-700">
+                {isRtl ? "ملاحظات التجويد والمخارج:" : "Tajweed & Articulation Notes:"}
+              </span>
+              <ul className="list-disc list-inside text-xs text-slate-600 flex flex-col gap-1">
+                {evaluationResult.tajweedObservations.map((obs, i) => (
+                  <li key={i}>{obs}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Next Time Advice */}
+          {evaluationResult.nextTimeAdvice && evaluationResult.nextTimeAdvice.length > 0 && (
+            <div className="flex flex-col gap-1.5 p-3 bg-amber-50/50 rounded-xl border border-amber-200/60">
+              <span className="text-[11px] font-bold text-amber-800">
+                {isRtl ? "نصائح للتسميع القادم:" : "Tips for Next Recitation:"}
+              </span>
+              <ul className="list-disc list-inside text-xs text-slate-700 flex flex-col gap-1">
+                {evaluationResult.nextTimeAdvice.map((tip, i) => (
+                  <li key={i}>{tip}</li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

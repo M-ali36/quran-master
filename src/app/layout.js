@@ -1,4 +1,5 @@
 import "./globals.css";
+import Image from "next/image";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import Navbar from "@/components/Navbar";
@@ -55,7 +56,22 @@ export default function RootLayout({ children }) {
         <LanguageProvider>
           <AuthProvider>
             <span className="pointer-events-none absolute h-full w-full left-0 top-0 bg-[#becfd9] flex justify-center items-center overflow-hidden">
-              <VideoSlider />
+              {/* Static background image for mobile/tablet */}
+              <div className="relative w-full h-full lg:hidden">
+                <Image
+                  src="/images/bg.png"
+                  alt="Background"
+                  fill
+                  priority
+                  className="object-cover"
+                />
+              </div>
+
+              {/* Video slider for desktop only */}
+              <div className="hidden lg:contents">
+                <VideoSlider />
+              </div>
+
               <span className="absolute h-full w-full top-0 left-0 bg-gradient-to-t from-slate-400/60 to-slate-400/0 bggr"></span>
             </span>
 

@@ -6,6 +6,7 @@ export const ar = {
     saveCloud: "حفظ التقدم",
     signOut: "تسجيل الخروج",
     switchLang: "English",
+    switchLangM: "En"
   },
   home: {
     welcome: "مرحبًا بك",
