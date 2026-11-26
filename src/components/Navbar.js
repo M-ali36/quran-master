@@ -268,9 +268,7 @@ export default function Navbar() {
               )}
             </div>
           ) : (
-            <span className="text-xs px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 font-medium border border-amber-200">
-              {t.navbar.guestBadge}
-            </span>
+            <></>
           )}
         </div>
       </div>
