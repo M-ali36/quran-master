@@ -850,7 +850,7 @@ export default function PlayerNormal() {
             className="p-2 rounded-xl text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition cursor-pointer"
             title={lang === "ar" ? "السورة السابقة" : "Previous Surah"}
           >
-            <Prev className="w-5 h-5 rtl:rotate-180" />
+            <Prev className="w-4 h-4 rtl:rotate-180" />
           </button>
 
           <button
