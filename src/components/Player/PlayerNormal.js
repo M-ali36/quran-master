@@ -856,7 +856,7 @@ export default function PlayerNormal() {
           <button
             onClick={togglePlay}
             disabled={!blobAudioUrl}
-            className="playBg p-3 text-slate-600 rounded-full shadow-sm transition cursor-pointer active:scale-95"
+            className="p-3 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl shadow-sm transition cursor-pointer active:scale-95"
             title={
               isPlaying
                 ? lang === "ar" ? "إيقاف مؤقت" : "Pause"
