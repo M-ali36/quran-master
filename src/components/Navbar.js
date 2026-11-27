@@ -63,6 +63,15 @@ export default function Navbar() {
       descEn: "Continuous full surah playback",
     },
     {
+      id: "reading",
+      color: "bg-teal-500",
+      ringColor: "ring-teal-200",
+      labelAr: "المصحف المقروء",
+      labelEn: "Reading Mode",
+      descAr: "تصفح المصحف بدون إنترنت",
+      descEn: "Offline Quran pages reader",
+    },
+    {
       id: "teacher",
       color: "bg-amber-500",
       ringColor: "ring-amber-200",
@@ -138,7 +147,7 @@ export default function Navbar() {
             </button>
 
             {isModeOpen && (
-              <div className="absolute top-full mt-2 ltr:left-0 rtl:right-0 sm:ltr:right-auto sm:rtl:left-auto w-56 rounded-2xl bg-white/95 backdrop-blur-md border border-slate-200 shadow-xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200 flex flex-col gap-1">
+              <div className="absolute top-full mt-2 ltr:left-0 rtl:right-0 sm:ltr:right-auto sm:rtl:left-auto w-60 rounded-2xl bg-white/95 backdrop-blur-md border border-slate-200 shadow-xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200 flex flex-col gap-1">
                 {modeOptions.map((opt) => {
                   const isSelected = opt.id === currentMode;
                   return (
