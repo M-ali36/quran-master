@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
@@ -11,11 +11,45 @@ export default function Navbar() {
   const pathname = usePathname();
   const { user, loading, logout, appData, updateAppData } = useAuth();
   const { lang, t, toggleLanguage } = useLanguage();
+  const isRtl = lang === "ar";
 
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isModeOpen, setIsModeOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+
   const menuRef = useRef(null);
   const modeRef = useRef(null);
+
+  const currentMode = appData?.playerType || "default";
+
+  // Check online/offline network status and auto-fallback to default mode
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    setIsOnline(navigator.onLine);
+
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => {
+      setIsOnline(false);
+      // Auto fallback to default mode if active mode requires internet connection
+      if (currentMode === "teacher" || currentMode === "reviewer") {
+        updateAppData({ playerType: "default" });
+      }
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    // Initial check on mount
+    if (!navigator.onLine && (currentMode === "teacher" || currentMode === "reviewer")) {
+      updateAppData({ playerType: "default" });
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [currentMode, updateAppData]);
 
   // Close dropdowns on outside click or Escape key
   useEffect(() => {
@@ -50,8 +84,6 @@ export default function Navbar() {
     return null;
   }
 
-  const currentMode = appData?.playerType || "default";
-
   const modeOptions = [
     {
       id: "default",
@@ -61,6 +93,7 @@ export default function Navbar() {
       labelEn: "Default Mode",
       descAr: "استماع متواصل للسور",
       descEn: "Continuous full surah playback",
+      requiresOnline: false,
     },
     {
       id: "reading",
@@ -70,6 +103,7 @@ export default function Navbar() {
       labelEn: "Reading Mode",
       descAr: "تصفح المصحف بدون إنترنت",
       descEn: "Offline Quran pages reader",
+      requiresOnline: false,
     },
     {
       id: "teacher",
@@ -79,6 +113,7 @@ export default function Navbar() {
       labelEn: "Teacher Mode",
       descAr: "تكرار الآيات للتحفيظ",
       descEn: "Verse loop & memorization",
+      requiresOnline: true,
     },
     {
       id: "reviewer",
@@ -88,13 +123,15 @@ export default function Navbar() {
       labelEn: "AI Reviewer",
       descAr: "تسميع وتقييم صوتي ذكي",
       descEn: "Recitation voice check",
+      requiresOnline: true,
     },
   ];
 
   const activeModeObj =
     modeOptions.find((m) => m.id === currentMode) || modeOptions[0];
 
-  const handleSelectMode = (modeId) => {
+  const handleSelectMode = (modeId, isDisabled) => {
+    if (isDisabled) return;
     updateAppData({ playerType: modeId });
     setIsModeOpen(false);
   };
@@ -130,7 +167,7 @@ export default function Navbar() {
               <span
                 className={`w-2 h-2 rounded-full transition-colors duration-200 ${activeModeObj.color} ring-2 ${activeModeObj.ringColor}`}
               />
-              <span>{lang === "ar" ? activeModeObj.labelAr : activeModeObj.labelEn}</span>
+              <span>{isRtl ? activeModeObj.labelAr : activeModeObj.labelEn}</span>
               <svg
                 className={`w-3.5 h-3.5 text-slate-500 transition-transform duration-200 ${
                   isModeOpen ? "rotate-180" : ""
@@ -147,37 +184,51 @@ export default function Navbar() {
             </button>
 
             {isModeOpen && (
-              <div className="absolute top-full mt-2 ltr:left-0 rtl:right-0 sm:ltr:right-auto sm:rtl:left-auto w-60 rounded-2xl bg-white/95 backdrop-blur-md border border-slate-200 shadow-xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200 flex flex-col gap-1">
+              <div className="absolute top-full mt-2 ltr:left-0 rtl:right-0 sm:ltr:right-auto sm:rtl:left-auto w-64 rounded-2xl bg-white/95 backdrop-blur-md border border-slate-200 shadow-xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200 flex flex-col gap-1">
                 {modeOptions.map((opt) => {
                   const isSelected = opt.id === currentMode;
+                  const isDisabled = !isOnline && opt.requiresOnline;
+
                   return (
                     <button
                       key={opt.id}
                       type="button"
-                      onClick={() => handleSelectMode(opt.id)}
-                      className={`w-full flex items-start gap-2.5 px-3 py-2 text-start rounded-xl transition cursor-pointer ${
-                        isSelected
-                          ? "bg-slate-900 text-white"
-                          : "text-slate-800 hover:bg-slate-100/80"
+                      disabled={isDisabled}
+                      onClick={() => handleSelectMode(opt.id, isDisabled)}
+                      className={`w-full flex items-start justify-between gap-2 px-3 py-2 text-start rounded-xl transition ${
+                        isDisabled
+                          ? "opacity-50 cursor-not-allowed bg-slate-50/70"
+                          : isSelected
+                          ? "bg-slate-900 text-white cursor-pointer"
+                          : "text-slate-800 hover:bg-slate-100/80 cursor-pointer"
                       }`}
                     >
-                      <span
-                        className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${opt.color} ${
-                          isSelected ? "ring-2 ring-white/50" : ""
-                        }`}
-                      />
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-xs font-semibold leading-tight">
-                          {lang === "ar" ? opt.labelAr : opt.labelEn}
-                        </span>
+                      <div className="flex items-start gap-2.5 min-w-0">
                         <span
-                          className={`text-[10px] leading-tight mt-0.5 ${
-                            isSelected ? "text-slate-300" : "text-slate-400"
-                          }`}
-                        >
-                          {lang === "ar" ? opt.descAr : opt.descEn}
-                        </span>
+                          className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+                            isDisabled ? "bg-slate-300 ring-0" : opt.color
+                          } ${isSelected ? "ring-2 ring-white/50" : ""}`}
+                        />
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-semibold leading-tight truncate">
+                            {isRtl ? opt.labelAr : opt.labelEn}
+                          </span>
+                          <span
+                            className={`text-[10px] leading-tight mt-0.5 truncate ${
+                              isSelected ? "text-slate-300" : "text-slate-400"
+                            }`}
+                          >
+                            {isRtl ? opt.descAr : opt.descEn}
+                          </span>
+                        </div>
                       </div>
+
+                      {/* Online-only tag indicator */}
+                      {isDisabled && (
+                        <span className="shrink-0 px-2 py-0.5 text-[9px] font-bold rounded-md bg-amber-100/90 text-amber-800 border border-amber-200/70">
+                          {isRtl ? "يتطلب اتصالاً" : "Online Only"}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
