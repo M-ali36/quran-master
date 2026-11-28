@@ -6,7 +6,7 @@ import { useLanguage } from "@/context/LanguageContext";
 
 const CACHE_NAME = "quran-pages-cache";
 const TOTAL_PAGES = 604;
-const CONCURRENT_DOWNLOADS = 5; // عدد الصور التي يتم تحميلها بالتوازي لتفادي حظر الشبكة
+const CONCURRENT_DOWNLOADS = 5;
 
 export default function InstallPrompt() {
   const { lang } = useLanguage();
@@ -17,22 +17,20 @@ export default function InstallPrompt() {
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
 
-  // حالات الكاش والتحميل
+  // حالات الكاش والتحميل (منفصلة تماماً عن صلاحية التثبيت)
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isAllCached, setIsAllCached] = useState(false);
 
   const abortControllerRef = useRef(null);
 
-  // 1. فحص الصفحات المتبقية وتحميلها بنظام Concurrency Pool
+  // 1. مزامنة وتحميل صفحات المصحف في الـ CacheStorage
   const syncOfflineQuranPages = useCallback(async () => {
     if (typeof window === "undefined" || !("caches" in window)) return;
 
     try {
       const cache = await caches.open(CACHE_NAME);
       const keys = await cache.keys();
-      
-      // جمع مسارات الصفحات المخزنة بالفعل
       const cachedPaths = new Set(keys.map((k) => new URL(k.url).pathname));
 
       const missingPages = [];
@@ -56,7 +54,6 @@ export default function InstallPrompt() {
       abortControllerRef.current = new AbortController();
       const signal = abortControllerRef.current.signal;
 
-      // معالجة الصفحات الناقصة دفعات منتظمة
       for (let i = 0; i < missingPages.length; i += CONCURRENT_DOWNLOADS) {
         if (signal.aborted) break;
 
@@ -65,10 +62,7 @@ export default function InstallPrompt() {
           batch.map(async (pageNum) => {
             const url = `/images/quran_image/${pageNum}.png`;
             try {
-              const res = await fetch(url, {
-                signal,
-                cache: "reload",
-              });
+              const res = await fetch(url, { signal, cache: "reload" });
               if (res.ok) {
                 await cache.put(url, res);
                 completedCount += 1;
@@ -81,7 +75,6 @@ export default function InstallPrompt() {
           })
         );
 
-        // تحديث النسبة المئوية بعد كل دفعة لتفادي فرط إعادة التصيير (Re-renders)
         setDownloadProgress(Math.round((completedCount / TOTAL_PAGES) * 100));
       }
 
@@ -95,60 +88,61 @@ export default function InstallPrompt() {
     }
   }, []);
 
-  // 2. التحقق من بيئة التشغيل وأحداث التثبيت
+  // 2. تتبع بيئة التشغيل وأحداث المتصفح
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // تسجيل الـ Service Worker
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
         .register("/sw.js")
         .catch((err) => console.error("SW Registration failed:", err));
     }
 
+    // فحص وضع الـ Standalone (هل التطبيق يعمل كنافذة تطبيق مستقلة حالياً؟)
     const standaloneMode =
       window.matchMedia("(display-mode: standalone)").matches ||
       window.navigator.standalone === true;
 
     setIsStandalone(standaloneMode);
 
-    // كشف أجهزة iOS
     const userAgent = window.navigator.userAgent.toLowerCase();
     const isIosDevice = /iphone|ipad|ipod/.test(userAgent) && !window.MSStream;
     setIsIos(isIosDevice);
 
-    // فحص حالة الكاش عند الفتح
+    // فحص الكاش فقط لمعرفة هل نحتاج استكمال تنزيل الصفحات
     if ("caches" in window) {
       caches.open(CACHE_NAME).then(async (cache) => {
         const keys = await cache.keys();
         const count = keys.filter((k) => k.url.includes("/images/quran_image/")).length;
-        if (count >= TOTAL_PAGES) {
-          setIsAllCached(true);
-        } else if (standaloneMode) {
-          // إذا كان التطبيق مثبتاً والصفحات غير مكتملة، نبدأ استكمالها فوراً
+        const allCached = count >= TOTAL_PAGES;
+        setIsAllCached(allCached);
+
+        // إذا كان التطبيق مفتوحاً في وضع standalone والصفحات لم تكتمل بعد، نتابع تحميلها
+        if (standaloneMode && !allCached) {
           setIsVisible(true);
           syncOfflineQuranPages();
         }
       });
     }
 
-    // إذا كان التطبيق مثبتاً بالفعل وكل شيء مخزن، لا نظهر الإشعار
+    // إذا كان التطبيق مفتوحاً كـ Standalone وكل شيء مكتمل في الكاش، لا داعي لظهور البار
     if (standaloneMode) return;
 
+    // فحص الإغلاق المؤقت للجلسة
     const isDismissed = sessionStorage.getItem("pwa_install_dismissed");
     if (isDismissed) return;
 
-    // متصفحات Chromium (Android, Windows, Mac)
+    // استقبال حدث جاهزية التثبيت
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
       setIsVisible(true);
     };
 
-    // عند اكتمال التثبيت الفعلي
+    // عند تثبيت التطبيق بنجاح
     const handleAppInstalled = () => {
       setDeferredPrompt(null);
-      setIsVisible(true);
+      setIsStandalone(true);
       syncOfflineQuranPages();
     };
 
@@ -164,17 +158,20 @@ export default function InstallPrompt() {
     };
   }, [syncOfflineQuranPages]);
 
-  // 3. نقرة زر التثبيت / التحميل
-  const handleActionClick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === "accepted") {
-        setDeferredPrompt(null);
-        syncOfflineQuranPages();
-      }
-    } else {
-      // إذا كان الزر مخصصاً لتنزيل الصفحات الناقصة
+  // 3. نقرة زر التثبيت
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) {
+      // إذا لم يتوفر حدث التثبيت بعد (Chrome cooldown أو متصفح لا يدعمه)، نبدأ مزامنة الكاش كإجراء بديل
+      syncOfflineQuranPages();
+      return;
+    }
+
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    
+    if (outcome === "accepted") {
+      setDeferredPrompt(null);
+      setIsVisible(false);
       syncOfflineQuranPages();
     }
   };
@@ -187,13 +184,13 @@ export default function InstallPrompt() {
     sessionStorage.setItem("pwa_install_dismissed", "true");
   };
 
-  if (!isVisible && (isAllCached || isStandalone)) return null;
+  // إخفاء المكون فقط إذا كان التطبيق مثبتاً ويعمل كـ Standalone، وكل الصفحات مكتملة وغير جارية التنزيل
+  if (isStandalone && isAllCached && !isDownloading) return null;
   if (!isVisible) return null;
 
   return (
     <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:max-w-md z-50 animate-in fade-in slide-in-from-bottom-5 duration-300">
       <div className="p-4 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col gap-3">
-        {/* رأس البطاقة */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-slate-900 text-amber-400 border border-amber-500/20 flex items-center justify-center shrink-0 font-bold text-xs shadow-sm font-['Amiri_Quran',_serif]">
@@ -203,18 +200,18 @@ export default function InstallPrompt() {
               <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                 {isDownloading
                   ? isRtl ? "جاري تحميل صفحات المصحف..." : "Downloading Quran Pages..."
-                  : isAllCached
-                  ? isRtl ? "المصحف جاهز أوفلاين" : "Quran Ready Offline"
-                  : isRtl ? "تثبيت التطبيق والمصحف" : "Install App & Quran"}
+                  : !isStandalone
+                  ? isRtl ? "تثبيت تطبيق HiSaja" : "Install HiSaja App"
+                  : isRtl ? "المصحف المقروء أوفلاين" : "Offline Quran Reader"}
               </span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                 {isDownloading
                   ? isRtl ? `تم حفظ ${downloadProgress}% من الصفحات` : `${downloadProgress}% cached`
-                  : isAllCached
-                  ? isRtl ? "جميع الصفحات الـ 604 متوفرة بدون إنترنت" : "All 604 pages available offline"
                   : isIos && !isStandalone
-                  ? isRtl ? "اضغط على زر المشاركة ثم «إضافة للشاشة الرئيسية»" : "Tap Share then 'Add to Home Screen'"
-                  : isRtl ? "تصفح سريع واستماع بدون إنترنت" : "Fast reading & offline audio"}
+                  ? isRtl ? "اضغط على «مشاركة» ثم «إضافة للشاشة الرئيسية»" : "Tap Share then 'Add to Home Screen'"
+                  : isAllCached
+                  ? isRtl ? "الصفحات جاهزة للقراءة بدون إنترنت" : "All pages ready for offline reading"
+                  : isRtl ? "قراءة واستماع بدون إنترنت مع تجربة تطبيق سريعة" : "Full offline access and faster loading"}
               </span>
             </div>
           </div>
@@ -236,20 +233,19 @@ export default function InstallPrompt() {
               </svg>
             </button>
 
-            {/* زر الإجراء الأساسي */}
-            {!isDownloading && !isAllCached && !isIos && (
+            {/* زر التثبيت: يظهر دائماً طالما أن المستخدم في المتصفح العادي (وليس في وضع standalone) */}
+            {!isStandalone && !isDownloading && !isIos && (
               <button
                 type="button"
-                onClick={handleActionClick}
+                onClick={handleInstallClick}
                 className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
               >
-                {deferredPrompt
-                  ? isRtl ? "تثبيت" : "Install"
-                  : isRtl ? "تحميل الصفحات" : "Download Pages"}
+                {isRtl ? "تثبيت" : "Install"}
               </button>
             )}
 
-            {isAllCached && (
+            {/* شارة إتمام تحميل الصفحات إن كان التطبيق مثبتاً والصفحات مكتملة */}
+            {isStandalone && isAllCached && (
               <span className="w-7 h-7 flex items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 text-xs font-bold">
                 ✓
               </span>
@@ -257,7 +253,7 @@ export default function InstallPrompt() {
           </div>
         </div>
 
-        {/* شريط تقدم التنزيل الفعلي */}
+        {/* شريط التقدم أثناء التنزيل */}
         {isDownloading && (
           <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
             <div
