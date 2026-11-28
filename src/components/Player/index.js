@@ -177,30 +177,24 @@ export default function Player() {
     }
   };
 
-  // Safe repeat limit input changes: clamp between 1-100 and cache immediately
-  const handleRepeatChange = (e) => {
-    const rawVal = e.target.value;
-    if (rawVal === "") {
-      setRepeatLimit(1);
-      saveCachedRepeat(1);
+  // Increment repeat limit (clamped to max 100)
+  const handleIncrementRepeat = () => {
+    if (repeatLimit < 100) {
+      const nextVal = repeatLimit + 1;
+      setRepeatLimit(nextVal);
+      saveCachedRepeat(nextVal);
       setRepeatCounter(0);
-      return;
     }
+  };
 
-    const val = parseInt(rawVal, 10);
-    let finalVal = 1;
-
-    if (isNaN(val) || val < 1) {
-      finalVal = 1;
-    } else if (val > 100) {
-      finalVal = 100;
-    } else {
-      finalVal = val;
+  // Decrement repeat limit (clamped to min 1)
+  const handleDecrementRepeat = () => {
+    if (repeatLimit > 1) {
+      const nextVal = repeatLimit - 1;
+      setRepeatLimit(nextVal);
+      saveCachedRepeat(nextVal);
+      setRepeatCounter(0);
     }
-
-    setRepeatLimit(finalVal);
-    saveCachedRepeat(finalVal);
-    setRepeatCounter(0);
   };
 
   const isPrevDisabled = currentAya <= 1;
@@ -276,21 +270,48 @@ export default function Player() {
         />
       </div>
 
-      {/* Repeat Counter (Persisted to cache, Min 1, Max 100) */}
-      <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-slate-100/80 px-3 py-1.5 rounded-xl border border-slate-200">
-        <span className="whitespace-nowrap">
+      {/* Repeat Stepper Control (Increment / Decrement, Read-only Input) */}
+      <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-slate-100/80 px-2.5 py-1.5 rounded-xl border border-slate-200">
+        <span className="whitespace-nowrap select-none">
           {lang === "ar" ? "التكرار:" : "Repeat:"}
         </span>
-        <input
-          type="number"
-          min="1"
-          max="100"
-          value={repeatLimit}
-          onChange={handleRepeatChange}
-          className="w-12 text-center bg-white border border-slate-300 rounded-md py-0.5 px-1 font-mono text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-        />
+
+        <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 shadow-xs">
+          {/* Minus Button */}
+          <button
+            type="button"
+            onClick={handleDecrementRepeat}
+            disabled={repeatLimit <= 1}
+            aria-label={lang === "ar" ? "تقليل التكرار" : "Decrease repeat"}
+            className="w-6 h-6 flex items-center justify-center rounded text-slate-600 hover:bg-slate-100 active:bg-slate-200 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-sm select-none"
+          >
+            −
+          </button>
+
+          {/* Non-editable Display Field */}
+          <input
+            type="text"
+            readOnly
+            tabIndex={-1}
+            value={repeatLimit}
+            aria-label={lang === "ar" ? "عدد مرات التكرار" : "Repeat limit"}
+            className="w-8 text-center bg-transparent border-none py-0 font-mono text-slate-900 font-bold focus:outline-none select-none cursor-default"
+          />
+
+          {/* Plus Button */}
+          <button
+            type="button"
+            onClick={handleIncrementRepeat}
+            disabled={repeatLimit >= 100}
+            aria-label={lang === "ar" ? "زيادة التكرار" : "Increase repeat"}
+            className="w-6 h-6 flex items-center justify-center rounded text-slate-600 hover:bg-slate-100 active:bg-slate-200 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-sm select-none"
+          >
+            +
+          </button>
+        </div>
+
         {repeatLimit > 1 && (
-          <span className="text-[10px] text-slate-400 font-mono">
+          <span className="text-[10px] text-slate-400 font-mono select-none">
             ({repeatCounter + 1}/{repeatLimit})
           </span>
         )}

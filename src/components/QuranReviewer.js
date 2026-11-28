@@ -55,7 +55,7 @@ export default function QuranReviewer() {
     return surahs.find((s) => s.index === formatted) || null;
   }, [surahs, selectedSura]);
 
-  const maxAyas = activeSurah?.count || 7;
+  const maxAyas = Number(activeSurah?.count) || 7;
 
   // 2. Load selected verses using 3-digit padded filenames
   useEffect(() => {
@@ -100,6 +100,32 @@ export default function QuranReviewer() {
       isMounted = false;
     };
   }, [selectedSura, startAya, endAya]);
+
+  // Stepper handlers for startAya
+  const handleDecrementStart = () => {
+    if (startAya > 1) {
+      setStartAya((prev) => prev - 1);
+    }
+  };
+
+  const handleIncrementStart = () => {
+    if (startAya < endAya) {
+      setStartAya((prev) => prev + 1);
+    }
+  };
+
+  // Stepper handlers for endAya
+  const handleDecrementEnd = () => {
+    if (endAya > startAya) {
+      setEndAya((prev) => prev - 1);
+    }
+  };
+
+  const handleIncrementEnd = () => {
+    if (endAya < maxAyas) {
+      setEndAya((prev) => prev + 1);
+    }
+  };
 
   // 3. Audio Recording
   const startRecording = async () => {
@@ -236,7 +262,8 @@ export default function QuranReviewer() {
 
       {/* Surah & Range Selectors */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="flex flex-col gap-1">
+        {/* Surah Selection */}
+        <div className="flex flex-col gap-1.5">
           <label className="text-xs font-semibold text-slate-700">
             {isRtl ? "السورة" : "Surah"}
           </label>
@@ -244,14 +271,15 @@ export default function QuranReviewer() {
             value={selectedSura}
             onChange={(e) => {
               const val = parseInt(e.target.value, 10);
+              const matchedCount = Number(surahs.find((s) => parseInt(s.index, 10) === val)?.count) || 7;
               setSelectedSura(val);
               setStartAya(1);
-              setEndAya(Math.min(5, surahs.find((s) => parseInt(s.index, 10) === val)?.count || 5));
+              setEndAya(Math.min(5, matchedCount));
               setEvaluationResult(null);
               setErrorMessage("");
               setAudioBlob(null);
             }}
-            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800"
+            className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:border-amber-500 cursor-pointer"
           >
             {surahs.map((s) => (
               <option key={s.index} value={parseInt(s.index, 10)}>
@@ -261,37 +289,79 @@ export default function QuranReviewer() {
           </select>
         </div>
 
-        <div className="flex flex-col gap-1">
+        {/* From Verse Stepper */}
+        <div className="flex flex-col gap-1.5">
           <label className="text-xs font-semibold text-slate-700">
             {isRtl ? "من آية" : "From Verse"}
           </label>
-          <input
-            type="number"
-            min={1}
-            max={endAya}
-            value={startAya}
-            onChange={(e) => setStartAya(Math.max(1, parseInt(e.target.value, 10) || 1))}
-            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800"
-          />
+          <div className="flex items-center justify-between h-10 bg-slate-50 border border-slate-200 rounded-xl px-1">
+            <button
+              type="button"
+              onClick={handleDecrementStart}
+              disabled={startAya <= 1}
+              aria-label={isRtl ? "تقليل آية البداية" : "Decrease start verse"}
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
+            >
+              −
+            </button>
+            <input
+              type="text"
+              readOnly
+              tabIndex={-1}
+              value={startAya}
+              aria-label={isRtl ? "من آية" : "From Verse"}
+              className="w-12 text-center bg-transparent border-none py-0 font-mono text-slate-900 font-bold text-xs focus:outline-none select-none cursor-default"
+            />
+            <button
+              type="button"
+              onClick={handleIncrementStart}
+              disabled={startAya >= endAya}
+              aria-label={isRtl ? "زيادة آية البداية" : "Increase start verse"}
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
+            >
+              +
+            </button>
+          </div>
         </div>
 
-        <div className="flex flex-col gap-1">
+        {/* To Verse Stepper */}
+        <div className="flex flex-col gap-1.5">
           <label className="text-xs font-semibold text-slate-700">
             {isRtl ? "إلى آية" : "To Verse"}
           </label>
-          <input
-            type="number"
-            min={startAya}
-            max={maxAyas}
-            value={endAya}
-            onChange={(e) => setEndAya(Math.min(maxAyas, parseInt(e.target.value, 10) || startAya))}
-            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800"
-          />
+          <div className="flex items-center justify-between h-10 bg-slate-50 border border-slate-200 rounded-xl px-1">
+            <button
+              type="button"
+              onClick={handleDecrementEnd}
+              disabled={endAya <= startAya}
+              aria-label={isRtl ? "تقليل آية النهاية" : "Decrease end verse"}
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
+            >
+              −
+            </button>
+            <input
+              type="text"
+              readOnly
+              tabIndex={-1}
+              value={endAya}
+              aria-label={isRtl ? "إلى آية" : "To Verse"}
+              className="w-12 text-center bg-transparent border-none py-0 font-mono text-slate-900 font-bold text-xs focus:outline-none select-none cursor-default"
+            />
+            <button
+              type="button"
+              onClick={handleIncrementEnd}
+              disabled={endAya >= maxAyas}
+              aria-label={isRtl ? "زيادة آية النهاية" : "Increase end verse"}
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
+            >
+              +
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Target Quranic Text Preview */}
-      <div className="p-4 bg-amber-50/40 border border-amber-200/60 rounded-xl max-h-56 overflow-y-auto">
+      <div className="p-4 bg-[#fdfbf7] border border-amber-200/60 rounded-xl max-h-56 overflow-y-auto">
         <span className="text-[10px] uppercase font-bold text-amber-700 block mb-2">
           {isRtl ? "النص القرآني المعتمد المطلوب:" : "Target Quranic Text to Recite:"}
         </span>
@@ -301,7 +371,7 @@ export default function QuranReviewer() {
           </p>
         ) : (
           <div
-            className="text-lg leading-loose text-slate-900 font-['Amiri_Quran',_serif] text-right"
+            className="text-2xl leading-loose text-slate-900 font-['Amiri_Quran',_serif] text-right"
             dir="rtl"
           >
             {targetVerses.map((v) => (
