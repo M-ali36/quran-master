@@ -16,15 +16,16 @@ export default function InstallPrompt() {
   const [isVisible, setIsVisible] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
+  const [showManualGuide, setShowManualGuide] = useState(false);
 
-  // حالات الكاش والتحميل (منفصلة تماماً عن صلاحية التثبيت)
+  // حالات الكاش والتحميل
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isAllCached, setIsAllCached] = useState(false);
 
   const abortControllerRef = useRef(null);
 
-  // 1. مزامنة وتحميل صفحات المصحف في الـ CacheStorage
+  // 1. مزامنة وتحميل صفحات المصحف في الكاش
   const syncOfflineQuranPages = useCallback(async () => {
     if (typeof window === "undefined" || !("caches" in window)) return;
 
@@ -88,7 +89,7 @@ export default function InstallPrompt() {
     }
   }, []);
 
-  // 2. تتبع بيئة التشغيل وأحداث المتصفح
+  // 2. التحقق من البيئة والأحداث
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -98,7 +99,6 @@ export default function InstallPrompt() {
         .catch((err) => console.error("SW Registration failed:", err));
     }
 
-    // فحص وضع الـ Standalone (هل التطبيق يعمل كنافذة تطبيق مستقلة حالياً؟)
     const standaloneMode =
       window.matchMedia("(display-mode: standalone)").matches ||
       window.navigator.standalone === true;
@@ -109,7 +109,15 @@ export default function InstallPrompt() {
     const isIosDevice = /iphone|ipad|ipod/.test(userAgent) && !window.MSStream;
     setIsIos(isIosDevice);
 
-    // فحص الكاش فقط لمعرفة هل نحتاج استكمال تنزيل الصفحات
+    // إذا لم يكن التطبيق في وضع Standalone، أظهر الشريط فوراً ولا تنتظر beforeinstallprompt
+    if (!standaloneMode) {
+      const isDismissed = sessionStorage.getItem("pwa_install_dismissed");
+      if (!isDismissed) {
+        setIsVisible(true);
+      }
+    }
+
+    // فحص اكتمال صفحات الكاش
     if ("caches" in window) {
       caches.open(CACHE_NAME).then(async (cache) => {
         const keys = await cache.keys();
@@ -117,7 +125,6 @@ export default function InstallPrompt() {
         const allCached = count >= TOTAL_PAGES;
         setIsAllCached(allCached);
 
-        // إذا كان التطبيق مفتوحاً في وضع standalone والصفحات لم تكتمل بعد، نتابع تحميلها
         if (standaloneMode && !allCached) {
           setIsVisible(true);
           syncOfflineQuranPages();
@@ -125,24 +132,16 @@ export default function InstallPrompt() {
       });
     }
 
-    // إذا كان التطبيق مفتوحاً كـ Standalone وكل شيء مكتمل في الكاش، لا داعي لظهور البار
-    if (standaloneMode) return;
-
-    // فحص الإغلاق المؤقت للجلسة
-    const isDismissed = sessionStorage.getItem("pwa_install_dismissed");
-    if (isDismissed) return;
-
-    // استقبال حدث جاهزية التثبيت
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
       setIsVisible(true);
     };
 
-    // عند تثبيت التطبيق بنجاح
     const handleAppInstalled = () => {
       setDeferredPrompt(null);
       setIsStandalone(true);
+      setIsVisible(false);
       syncOfflineQuranPages();
     };
 
@@ -158,20 +157,20 @@ export default function InstallPrompt() {
     };
   }, [syncOfflineQuranPages]);
 
-  // 3. نقرة زر التثبيت
+  // 3. النقر على زر التثبيت
   const handleInstallClick = async () => {
-    if (!deferredPrompt) {
-      // إذا لم يتوفر حدث التثبيت بعد (Chrome cooldown أو متصفح لا يدعمه)، نبدأ مزامنة الكاش كإجراء بديل
-      syncOfflineQuranPages();
-      return;
-    }
-
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    
-    if (outcome === "accepted") {
-      setDeferredPrompt(null);
-      setIsVisible(false);
+    if (deferredPrompt) {
+      // المتصفح جاهز بالنافذة الأصلية
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === "accepted") {
+        setDeferredPrompt(null);
+        setIsVisible(false);
+        syncOfflineQuranPages();
+      }
+    } else {
+      // إذا كان المتصفح في فترة تبريد (Cooldown) بعد الإلغاء، نرشده للتثبيت اليدوي من القائمة
+      setShowManualGuide(true);
       syncOfflineQuranPages();
     }
   };
@@ -184,7 +183,6 @@ export default function InstallPrompt() {
     sessionStorage.setItem("pwa_install_dismissed", "true");
   };
 
-  // إخفاء المكون فقط إذا كان التطبيق مثبتاً ويعمل كـ Standalone، وكل الصفحات مكتملة وغير جارية التنزيل
   if (isStandalone && isAllCached && !isDownloading) return null;
   if (!isVisible) return null;
 
@@ -200,24 +198,19 @@ export default function InstallPrompt() {
               <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                 {isDownloading
                   ? isRtl ? "جاري تحميل صفحات المصحف..." : "Downloading Quran Pages..."
-                  : !isStandalone
-                  ? isRtl ? "تثبيت تطبيق HiSaja" : "Install HiSaja App"
-                  : isRtl ? "المصحف المقروء أوفلاين" : "Offline Quran Reader"}
+                  : isRtl ? "تثبيت تطبيق HiSaja" : "Install HiSaja App"}
               </span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                 {isDownloading
                   ? isRtl ? `تم حفظ ${downloadProgress}% من الصفحات` : `${downloadProgress}% cached`
-                  : isIos && !isStandalone
+                  : isIos
                   ? isRtl ? "اضغط على «مشاركة» ثم «إضافة للشاشة الرئيسية»" : "Tap Share then 'Add to Home Screen'"
-                  : isAllCached
-                  ? isRtl ? "الصفحات جاهزة للقراءة بدون إنترنت" : "All pages ready for offline reading"
-                  : isRtl ? "قراءة واستماع بدون إنترنت مع تجربة تطبيق سريعة" : "Full offline access and faster loading"}
+                  : isRtl ? "تصفح سريع واستماع بدون إنترنت" : "Fast reading & offline audio"}
               </span>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* زر الإغلاق */}
             <button
               type="button"
               onClick={handleDismiss}
@@ -233,7 +226,6 @@ export default function InstallPrompt() {
               </svg>
             </button>
 
-            {/* زر التثبيت: يظهر دائماً طالما أن المستخدم في المتصفح العادي (وليس في وضع standalone) */}
             {!isStandalone && !isDownloading && !isIos && (
               <button
                 type="button"
@@ -243,17 +235,19 @@ export default function InstallPrompt() {
                 {isRtl ? "تثبيت" : "Install"}
               </button>
             )}
-
-            {/* شارة إتمام تحميل الصفحات إن كان التطبيق مثبتاً والصفحات مكتملة */}
-            {isStandalone && isAllCached && (
-              <span className="w-7 h-7 flex items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 text-xs font-bold">
-                ✓
-              </span>
-            )}
           </div>
         </div>
 
-        {/* شريط التقدم أثناء التنزيل */}
+        {/* تنبيه الإرشاد للتثبيت اليدوي إذا كان المتصفح يحظر الحدث المؤقت */}
+        {showManualGuide && !deferredPrompt && !isIos && (
+          <div className="p-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 rounded-xl text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
+            {isRtl
+              ? "لتثبيت التطبيق بعد حذفه: اضغط على قائمة المتصفح (⋮) في الأعلى ثم اختر «تثبيت التطبيق» أو «إضافة للشاشة الرئيسية»."
+              : "To reinstall: open your browser menu (⋮) and select 'Install app' or 'Add to Home screen'."}
+          </div>
+        )}
+
+        {/* شريط تقدم التنزيل */}
         {isDownloading && (
           <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
             <div
