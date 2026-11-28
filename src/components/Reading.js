@@ -13,6 +13,11 @@ export default function Reading() {
   const [quranPages, setQuranPages] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [showNav, setShowNav] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // حالة السحب والتحريك
+  const [dragOffset, setDragOffset] = useState(0);
+  const [animatingMode, setAnimatingMode] = useState("idle"); // "idle" | "dragging" | "completing"
 
   // Modals state
   const [isSurahModalOpen, setIsSurahModalOpen] = useState(false);
@@ -25,12 +30,13 @@ export default function Reading() {
   const [jumpVerse, setJumpVerse] = useState(1);
   const [selectedJuz, setSelectedJuz] = useState(1);
 
+  const containerRef = useRef(null);
   const autoHideTimerRef = useRef(null);
   const touchStartXRef = useRef(0);
-  const touchEndXRef = useRef(0);
+  const touchDeltaXRef = useRef(0);
   const wakeLockRef = useRef(null);
 
-  // 1. تحميل ملفات JSON محلياً لضمان العمل بدون إنترنت
+  // 1. تحميل ملفات JSON محلياً
   useEffect(() => {
     async function loadOfflineData() {
       try {
@@ -47,7 +53,7 @@ export default function Reading() {
     loadOfflineData();
   }, []);
 
-  // 2. إبقاء شاشة الموبايل مضاءة (Screen Wake Lock API)
+  // 2. إبقاء شاشة الموبايل مضاءة
   useEffect(() => {
     async function activateWakeLock() {
       try {
@@ -62,9 +68,7 @@ export default function Reading() {
     activateWakeLock();
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        activateWakeLock();
-      }
+      if (document.visibilityState === "visible") activateWakeLock();
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -78,7 +82,40 @@ export default function Reading() {
     };
   }, []);
 
-  // 3. مؤقت الإخفاء التلقائي لأشرطة الملاحة
+  // 3. مراقبة حالة ملء الشاشة
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = useCallback(async (e) => {
+    if (e) e.stopPropagation();
+    try {
+      if (!document.fullscreenElement) {
+        const el = containerRef.current || document.documentElement;
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (err) {
+      console.warn("Fullscreen toggle error:", err);
+    }
+  }, []);
+
+  // 4. مؤقت إخفاء أشرطة التنقل
   const triggerNavVisibility = useCallback(() => {
     setShowNav(true);
     if (autoHideTimerRef.current) clearTimeout(autoHideTimerRef.current);
@@ -94,7 +131,7 @@ export default function Reading() {
     };
   }, [currentPage, triggerNavVisibility]);
 
-  // استخراج تفاصيل الصفحة الحالية والسورة
+  // استخراج تفاصيل الصفحة
   const pageDetails = useMemo(() => {
     if (!quranPages.length) return null;
     return quranPages.find((p) => p.page === currentPage) || quranPages[0];
@@ -107,7 +144,6 @@ export default function Reading() {
     return surahs.find((s) => s.index === formatted) || null;
   }, [pageDetails, surahs]);
 
-  // دالة مطابقة الآية والسورة مع أرقام الصفحات من pagesQuran.json
   const findPageByVerse = useCallback(
     (surahNum, verseNum) => {
       if (!quranPages.length) return 1;
@@ -120,12 +156,8 @@ export default function Reading() {
         if (sStart === sEnd && sStart === surahNum) {
           return verseNum >= vStart && verseNum <= vEnd;
         }
-        if (surahNum === sStart) {
-          return verseNum >= vStart;
-        }
-        if (surahNum === sEnd) {
-          return verseNum <= vEnd;
-        }
+        if (surahNum === sStart) return verseNum >= vStart;
+        if (surahNum === sEnd) return verseNum <= vEnd;
         return surahNum > sStart && surahNum < sEnd;
       });
       return match ? match.page : 1;
@@ -133,18 +165,35 @@ export default function Reading() {
     [quranPages]
   );
 
-  // التنقل بين الصفحات
+  // التنقل البرمجي السلس
   const handleNextPage = useCallback(() => {
-    setCurrentPage((prev) => Math.min(604, prev + 1));
-    triggerNavVisibility();
-  }, [triggerNavVisibility]);
+    if (currentPage >= 604 || animatingMode !== "idle") return;
+    const width = containerRef.current?.offsetWidth || window.innerWidth;
+    setAnimatingMode("completing");
+    setDragOffset(width);
+
+    setTimeout(() => {
+      setAnimatingMode("idle");
+      setDragOffset(0);
+      setCurrentPage((prev) => Math.min(604, prev + 1));
+      triggerNavVisibility();
+    }, 280);
+  }, [currentPage, animatingMode, triggerNavVisibility]);
 
   const handlePrevPage = useCallback(() => {
-    setCurrentPage((prev) => Math.max(1, prev - 1));
-    triggerNavVisibility();
-  }, [triggerNavVisibility]);
+    if (currentPage <= 1 || animatingMode !== "idle") return;
+    const width = containerRef.current?.offsetWidth || window.innerWidth;
+    setAnimatingMode("completing");
+    setDragOffset(-width);
 
-  // الانتقال إلى الجزء بالاعتماد على surah.json و pagesQuran.json
+    setTimeout(() => {
+      setAnimatingMode("idle");
+      setDragOffset(0);
+      setCurrentPage((prev) => Math.max(1, prev - 1));
+      triggerNavVisibility();
+    }, 280);
+  }, [currentPage, animatingMode, triggerNavVisibility]);
+
   const handleJumpToJuz = (juzNumber) => {
     setSelectedJuz(juzNumber);
     const paddedJuz = String(juzNumber).padStart(2, "0");
@@ -155,8 +204,7 @@ export default function Reading() {
         if (targetJuzObj && targetJuzObj.verse?.start) {
           const surahNum = parseInt(s.index, 10);
           const verseNum = parseInt(targetJuzObj.verse.start.replace("verse_", ""), 10) || 1;
-          const foundPage = findPageByVerse(surahNum, verseNum);
-          setCurrentPage(foundPage);
+          setCurrentPage(findPageByVerse(surahNum, verseNum));
           setIsJumpModalOpen(false);
           return;
         }
@@ -165,37 +213,83 @@ export default function Reading() {
   };
 
   const handleJumpToPage = () => {
-    const p = Math.max(1, Math.min(604, parseInt(pageInput, 10) || 1));
-    setCurrentPage(p);
+    setCurrentPage(Math.max(1, Math.min(604, parseInt(pageInput, 10) || 1)));
     setIsJumpModalOpen(false);
   };
 
   const handleJumpToVerse = () => {
-    const p = findPageByVerse(jumpSurah, parseInt(jumpVerse, 10) || 1);
-    setCurrentPage(p);
+    setCurrentPage(findPageByVerse(jumpSurah, parseInt(jumpVerse, 10) || 1));
     setIsJumpModalOpen(false);
   };
 
-  // إيماءات السحب التاتش للموبايل (مصحف عربي RTL)
+  // Touch Drag Events
   const onTouchStart = (e) => {
+    if (animatingMode !== "idle") return;
     touchStartXRef.current = e.touches[0].clientX;
+    touchDeltaXRef.current = 0;
+    setAnimatingMode("dragging");
   };
 
-  const onTouchEnd = (e) => {
-    touchEndXRef.current = e.changedTouches[0].clientX;
-    const distance = touchStartXRef.current - touchEndXRef.current;
-    if (Math.abs(distance) > 50) {
-      if (distance > 0) {
-        // سحب لليسار -> الصفحة التالية
-        handleNextPage();
-      } else {
-        // سحب لليمين -> الصفحة السابقة
-        handlePrevPage();
-      }
+  const onTouchMove = (e) => {
+    if (animatingMode !== "dragging") return;
+    const currentX = e.touches[0].clientX;
+    let delta = currentX - touchStartXRef.current;
+
+    // مقاومة عند أطراف المصحف
+    if (currentPage >= 604 && delta > 0) {
+      delta = delta * 0.15;
+    } else if (currentPage <= 1 && delta < 0) {
+      delta = delta * 0.15;
     }
+
+    touchDeltaXRef.current = delta;
+    setDragOffset(delta);
   };
 
-  // قائمة السور المفلترة للبحث
+  const onTouchEnd = () => {
+    if (animatingMode !== "dragging") return;
+
+    const delta = touchDeltaXRef.current;
+    const threshold = 55; // حساسية استجابة الانتقال
+    const containerWidth = containerRef.current?.offsetWidth || window.innerWidth;
+
+    // 1. الانتقال للصفحة التالية (سحب من اليسار إلى اليمين)
+    if (delta > threshold && currentPage < 604) {
+      setAnimatingMode("completing");
+      setDragOffset(containerWidth);
+
+      setTimeout(() => {
+        // نلغي الـ transition أولاً قبل التحديث لمنع الوميض أو تكرار الحركة
+        setAnimatingMode("idle");
+        setDragOffset(0);
+        setCurrentPage((prev) => Math.min(604, prev + 1));
+        triggerNavVisibility();
+      }, 260);
+
+    // 2. الانتقال للصفحة السابقة (سحب من اليمين إلى اليسار)
+    } else if (delta < -threshold && currentPage > 1) {
+      setAnimatingMode("completing");
+      setDragOffset(-containerWidth);
+
+      setTimeout(() => {
+        setAnimatingMode("idle");
+        setDragOffset(0);
+        setCurrentPage((prev) => Math.max(1, prev - 1));
+        triggerNavVisibility();
+      }, 260);
+
+    // 3. عدم تجاوز العتبة -> ارتداد ناعم للموضع الأصلي
+    } else {
+      setAnimatingMode("completing");
+      setDragOffset(0);
+      setTimeout(() => {
+        setAnimatingMode("idle");
+      }, 200);
+    }
+
+    touchDeltaXRef.current = 0;
+  };
+
   const filteredSurahs = useMemo(() => {
     if (!surahSearch.trim()) return surahs;
     const term = surahSearch.toLowerCase().trim();
@@ -209,33 +303,62 @@ export default function Reading() {
 
   return (
     <div
-      className="relative w-full h-[90vh] sm:h-[86vh] bg-[#fdfbf7] rounded-3xl overflow-hidden border border-amber-900/10 shadow-2xl flex flex-col justify-between select-none"
+      ref={containerRef}
+      className={`relative w-full overflow-hidden select-none flex flex-col justify-between transition-all duration-300 ${
+        isFullscreen
+          ? "fixed inset-0 z-50 h-screen w-screen rounded-none border-none"
+          : "rounded-3xl border border-amber-900/10 shadow-2xl"
+      }`}
       onClick={triggerNavVisibility}
       onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
     >
-      {/* 1. الشريط العلوي الذكي (Auto-hide Header) */}
+      <span className="absolute h-full w-full top-0 left-0 bg-gradient-to-t from-slate-400/60 to-slate-400/0 pointer-events-none z-10"></span>
+
+      {/* الشريط العلوي الذكي */}
       <header
-        className={`absolute top-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-4 py-3 bg-stone-900/80 backdrop-blur-md text-white flex items-center justify-between shadow-md ${
+        className={`absolute top-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-3 sm:px-4 py-2.5 bg-stone-900/85 backdrop-blur-md text-white flex items-center justify-between shadow-md ${
           showNav ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0 pointer-events-none"
         }`}
       >
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setIsSurahModalOpen(true);
-          }}
-          className="flex items-center gap-2 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
-        >
-          <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
-          </svg>
-          <span>{currentSurah ? (isRtl ? currentSurah.titleAr : currentSurah.title) : "فهرس السور"}</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsSurahModalOpen(true);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
+          >
+            <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+            </svg>
+            <span className="truncate max-w-[90px] sm:max-w-none">
+              {currentSurah ? (isRtl ? currentSurah.titleAr : currentSurah.title) : "فهرس السور"}
+            </span>
+          </button>
 
-        {/* بيانات الصفحة الحالية والسورة */}
-        <div className="flex flex-col items-center">
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+            className="p-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white border border-stone-600 rounded-xl text-xs transition active:scale-95 cursor-pointer flex items-center justify-center"
+            title={isFullscreen ? (isRtl ? "إلغاء ملء الشاشة" : "Exit Fullscreen") : (isRtl ? "شاشة كاملة" : "Fullscreen")}
+          >
+            {isFullscreen ? (
+              <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9L4 4m0 0v5m0-5h5m6 6l5-5m0 0h-5m5 0v5m-6 6l5 5m0 0v-5m0 5h-5m-6-6l-5 5m0 0h5m-5 0v-5" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+              </svg>
+            )}
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center text-center">
           <span className="text-sm font-bold text-amber-400 font-['Amiri_Quran',_serif]">
             {pageDetails?.start?.name?.ar || ""}
           </span>
@@ -244,34 +367,33 @@ export default function Reading() {
           </span>
         </div>
 
-        {/* زر الانتقال السريع */}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             setIsJumpModalOpen(true);
           }}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer shadow-xs shrink-0"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
           <span>{isRtl ? "انتقال" : "Jump"}</span>
         </button>
       </header>
 
-      {/* أزرار الأسهم للكمبيوتر */}
+      {/* أزرار الأسهم للشاشات الكبيرة */}
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
           handlePrevPage();
         }}
-        disabled={currentPage <= 1}
+        disabled={currentPage <= 1 || animatingMode !== "idle"}
         aria-label="Previous Page"
         className="hidden md:flex absolute right-4 top-1/2 -translate-y-1/2 z-20 w-11 h-11 items-center justify-center rounded-full bg-stone-900/40 hover:bg-stone-900/75 text-white backdrop-blur-xs transition disabled:opacity-0 cursor-pointer"
       >
-        <svg className="w-6 h-6 rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
         </svg>
       </button>
@@ -282,32 +404,83 @@ export default function Reading() {
           e.stopPropagation();
           handleNextPage();
         }}
-        disabled={currentPage >= 604}
+        disabled={currentPage >= 604 || animatingMode !== "idle"}
         aria-label="Next Page"
         className="hidden md:flex absolute left-4 top-1/2 -translate-y-1/2 z-20 w-11 h-11 items-center justify-center rounded-full bg-stone-900/40 hover:bg-stone-900/75 text-white backdrop-blur-xs transition disabled:opacity-0 cursor-pointer"
       >
-        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className="w-6 h-6 rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
         </svg>
       </button>
 
-      {/* 2. حاوية صورة المصحف المتوافقة مع أوفلاين */}
-      <div className="flex-1 flex items-center justify-center p-2 sm:p-5 my-auto overflow-hidden">
-        <div className="relative w-full max-w-[550px] aspect-[1/1.55] shadow-2xl rounded-sm overflow-hidden bg-white border border-stone-200">
-          <Image
-            src={`/images/quran_image/${currentPage}.png`}
-            alt={`Quran Page ${currentPage}`}
-            fill
-            priority
-            unoptimized
-            className="object-contain pointer-events-none"
-          />
+      {/* 2. حاوية العرض ثلاثية الشرائح المستقرة لمنع الأنيميشن المزدوج */}
+      <div className="relative flex-1 flex items-center justify-center overflow-hidden touch-pan-y">
+        <div
+          className={`relative w-full h-full flex items-center justify-center ${
+            animatingMode === "completing"
+              ? "transition-transform duration-250 ease-out"
+              : "transition-none"
+          }`}
+          style={{
+            transform: `translate3d(${dragOffset}px, 0, 0)`,
+            willChange: "transform",
+          }}
+        >
+          {/* الصفحة القادمة (Next Page): تقع يسار الشاشة (-100%) */}
+          {currentPage < 604 && (
+            <div
+              className="absolute inset-0 flex items-center justify-center p-2 sm:p-5 pointer-events-none"
+              style={{ transform: "translate3d(-100%, 0, 0)" }}
+            >
+              <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
+                <Image
+                  src={`/images/quran_image/${currentPage + 1}.png`}
+                  alt={`Quran Page ${currentPage + 1}`}
+                  fill
+                  unoptimized
+                  className="object-contain"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* الصفحة الحالية (Current Page): تقع في المركز (0%) */}
+          <div className="relative w-full h-full flex items-center justify-center p-2 sm:p-5">
+            <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
+              <Image
+                src={`/images/quran_image/${currentPage}.png`}
+                alt={`Quran Page ${currentPage}`}
+                fill
+                priority
+                unoptimized
+                className="object-contain pointer-events-none"
+              />
+            </div>
+          </div>
+
+          {/* الصفحة السابقة (Previous Page): تقع يمين الشاشة (+100%) */}
+          {currentPage > 1 && (
+            <div
+              className="absolute inset-0 flex items-center justify-center p-2 sm:p-5 pointer-events-none"
+              style={{ transform: "translate3d(100%, 0, 0)" }}
+            >
+              <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
+                <Image
+                  src={`/images/quran_image/${currentPage - 1}.png`}
+                  alt={`Quran Page ${currentPage - 1}`}
+                  fill
+                  unoptimized
+                  className="object-contain"
+                />
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* 3. الشريط السفلي الذكي (Auto-hide Footer) */}
+      {/* الشريط السفلي الذكي */}
       <footer
-        className={`absolute bottom-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-4 py-3 bg-stone-900/80 backdrop-blur-md text-white flex items-center justify-between shadow-lg ${
+        className={`absolute bottom-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-4 py-2.5 bg-stone-900/85 backdrop-blur-md text-white flex items-center justify-between shadow-lg ${
           showNav ? "translate-y-0 opacity-100" : "translate-y-full opacity-0 pointer-events-none"
         }`}
       >
@@ -317,13 +490,12 @@ export default function Reading() {
             e.stopPropagation();
             handlePrevPage();
           }}
-          disabled={currentPage <= 1}
-          className="flex items-center gap-1 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 rounded-xl text-xs font-semibold cursor-pointer"
+          disabled={currentPage <= 1 || animatingMode !== "idle"}
+          className="flex items-center gap-1 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 rounded-xl text-xs font-semibold cursor-pointer shrink-0"
         >
           <span>{isRtl ? "السابقة" : "Prev"}</span>
         </button>
 
-        {/* شريط تمرير سريع لأرقام الصفحات */}
         <div
           className="flex items-center gap-2 max-w-[220px] w-full mx-2"
           onClick={(e) => e.stopPropagation()}
@@ -344,14 +516,14 @@ export default function Reading() {
             e.stopPropagation();
             handleNextPage();
           }}
-          disabled={currentPage >= 604}
-          className="flex items-center gap-1 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 rounded-xl text-xs font-semibold cursor-pointer"
+          disabled={currentPage >= 604 || animatingMode !== "idle"}
+          className="flex items-center gap-1 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 rounded-xl text-xs font-semibold cursor-pointer shrink-0"
         >
           <span>{isRtl ? "التالية" : "Next"}</span>
         </button>
       </footer>
 
-      {/* مودال فهرس السور مع البحث الفوري */}
+      {/* مودال فهرس السور */}
       {isSurahModalOpen && (
         <div
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
@@ -419,7 +591,7 @@ export default function Reading() {
         </div>
       )}
 
-      {/* مودال أدوات الانتقال السريع (صفحة / جزء / آية) */}
+      {/* مودال أدوات الانتقال السريع */}
       {isJumpModalOpen && (
         <div
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
@@ -440,7 +612,6 @@ export default function Reading() {
               </button>
             </div>
 
-            {/* الانتقال لرقم الصفحة */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-bold text-slate-700">{isRtl ? "إلى الصفحة (1 - 604):" : "To Page (1-604):"}</label>
               <div className="flex gap-2">
@@ -463,7 +634,6 @@ export default function Reading() {
               </div>
             </div>
 
-            {/* الانتقال للجزء (1 - 30) */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-bold text-slate-700">{isRtl ? "إلى الجزء (1 - 30):" : "To Juz (1-30):"}</label>
               <div className="flex gap-2">
@@ -488,7 +658,6 @@ export default function Reading() {
               </div>
             </div>
 
-            {/* الانتقال لآية معينة */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-bold text-slate-700">{isRtl ? "إلى سورة وآية محددة:" : "To Surah & Verse:"}</label>
               <div className="grid grid-cols-2 gap-2">
