@@ -1,590 +1,781 @@
-// src/components/QuranReviewer.js
+// src/components/Reading.js
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useLanguage } from "@/context/LanguageContext";
 
-export default function QuranReviewer() {
-  const { appData, updateAppData } = useAuth();
-  const { lang } = useLanguage();
-  const isRtl = lang === "ar";
+const CACHE_NAME = "quran-pages-cache";
 
-  const [surahs, setSurahs] = useState([]);
-  const [selectedSura, setSelectedSura] = useState(appData?.currentSura || 1);
-  const [startAya, setStartAya] = useState(1);
-  const [endAya, setEndAya] = useState(5);
-  const [targetVerses, setTargetVerses] = useState([]);
-  const [isLoadingVerses, setIsLoadingVerses] = useState(false);
+// ذاكرة تخزين مؤقت فورية (In-Memory URL Cache) لتفادي أي وميض أثناء القراءة المتكررة
+const blobUrlCache = new Map();
 
-  // Recording and review states
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [audioBlob, setAudioBlob] = useState(null);
-  const [isEvaluating, setIsEvaluating] = useState(false);
-  const [evaluationResult, setEvaluationResult] = useState(null);
-  const [errorMessage, setErrorMessage] = useState("");
+async function getPageSource(pageNumber) {
+  if (pageNumber < 1 || pageNumber > 604) return null;
 
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  const timerRef = useRef(null);
-  const audioStreamRef = useRef(null);
+  // 1. إذا كانت الصورة محوّلة إلى Blob URL مسبقاً في الذاكرة
+  if (blobUrlCache.has(pageNumber)) {
+    return blobUrlCache.get(pageNumber);
+  }
 
-  // 1. Load surahs list
-  useEffect(() => {
-    async function loadSurahs() {
-      try {
-        const mod = await import("@/data/surah.json");
-        setSurahs(mod.default || mod);
-      } catch (e) {
-        console.error("Failed to load surah list", e);
+  const defaultUrl = `/images/quran_image/${pageNumber}.png`;
+
+  // 2. إذا كان الجهاز متصلاً، الرابط المباشر يكفي
+  if (typeof window !== "undefined" && navigator.onLine) {
+    return defaultUrl;
+  }
+
+  // 3. في وضع الأوفلاين، استخرجها من CacheStorage فوراً
+  if (typeof window !== "undefined" && "caches" in window) {
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      const res = await cache.match(defaultUrl);
+      if (res) {
+        const blob = await res.blob();
+        const objUrl = URL.createObjectURL(blob);
+        blobUrlCache.set(pageNumber, objUrl);
+        return objUrl;
       }
+    } catch (e) {
+      console.warn(`Failed reading cache for page ${pageNumber}:`, e);
     }
-    loadSurahs();
+  }
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, []);
+  return defaultUrl;
+}
 
-  const activeSurah = useMemo(() => {
-    const formatted = String(selectedSura).padStart(3, "0");
-    return surahs.find((s) => s.index === formatted) || null;
-  }, [surahs, selectedSura]);
+// مكوّن عرض صفحة المصحف بدون وميض
+function QuranPageImage({ pageNumber, isPriority = false, alt = "" }) {
+  // إذا كانت موجودة بالـ Map تُعرض فوراً في الريندر الأول بدون انتظار useEffect
+  const [src, setSrc] = useState(() => blobUrlCache.get(pageNumber) || `/images/quran_image/${pageNumber}.png`);
 
-  const maxAyas = Number(activeSurah?.count) || 7;
-
-  // 2. Load selected verses using 3-digit padded filenames
   useEffect(() => {
     let isMounted = true;
 
-    async function loadSelectedVerses() {
-      setIsLoadingVerses(true);
-      const versesData = [];
-      const suraPadded = String(selectedSura).padStart(3, "0");
-
-      for (let a = startAya; a <= endAya; a++) {
-        const ayaPadded = String(a).padStart(3, "0");
-        try {
-          const mod = await import(`@/data/verses/${suraPadded}_${ayaPadded}.json`);
-          const verseJson = mod.default || mod;
-
-          const arabicText =
-            typeof verseJson.text === "object"
-              ? verseJson.text?.ar || ""
-              : verseJson.text || "";
-
-          versesData.push({
-            aya: a,
-            text: arabicText,
-          });
-        } catch (err) {
-          console.error(`Failed to load verse ${suraPadded}_${ayaPadded}.json:`, err);
-        }
-      }
-
-      if (isMounted) {
-        setTargetVerses(versesData);
-        setIsLoadingVerses(false);
-      }
+    // إذا كانت متوفرة بالفعل في الذاكرة نحدثها فوراً
+    if (blobUrlCache.has(pageNumber)) {
+      setSrc(blobUrlCache.get(pageNumber));
+      return;
     }
 
-    if (startAya <= endAya) {
-      loadSelectedVerses();
-    }
+    getPageSource(pageNumber).then((resolvedSrc) => {
+      if (isMounted && resolvedSrc) {
+        setSrc(resolvedSrc);
+      }
+    });
 
     return () => {
       isMounted = false;
     };
-  }, [selectedSura, startAya, endAya]);
-
-  // Stepper handlers for startAya
-  const handleDecrementStart = () => {
-    if (startAya > 1) {
-      setStartAya((prev) => prev - 1);
-    }
-  };
-
-  const handleIncrementStart = () => {
-    if (startAya < endAya) {
-      setStartAya((prev) => prev + 1);
-    }
-  };
-
-  // Stepper handlers for endAya
-  const handleDecrementEnd = () => {
-    if (endAya > startAya) {
-      setEndAya((prev) => prev - 1);
-    }
-  };
-
-  const handleIncrementEnd = () => {
-    if (endAya < maxAyas) {
-      setEndAya((prev) => prev + 1);
-    }
-  };
-
-  // 3. Audio Recording
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioStreamRef.current = stream;
-      audioChunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        setAudioBlob(blob);
-        stream.getTracks().forEach((track) => track.stop());
-        audioStreamRef.current = null;
-      };
-
-      recorder.start();
-      setIsRecording(true);
-      setRecordingTime(0);
-      setEvaluationResult(null);
-      setErrorMessage("");
-
-      timerRef.current = setInterval(() => {
-        setRecordingTime((prev) => prev + 1);
-      }, 1000);
-    } catch {
-      setErrorMessage(
-        isRtl
-          ? "تعذر الوصول للميكروفون. يرجى التأكد من منح الإذن للمتصفح."
-          : "Microphone access denied. Please grant permission in your browser."
-      );
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      clearInterval(timerRef.current);
-    }
-  };
-
-  // 4. Send audio and verses to AI review
-  const handleEvaluate = async () => {
-    if (!audioBlob) return;
-
-    setIsEvaluating(true);
-    setErrorMessage("");
-    setEvaluationResult(null);
-
-    const combinedVerses = targetVerses.map((v) => `(${v.aya}) ${v.text}`).join(" ");
-
-    const formData = new FormData();
-    formData.append("audio", audioBlob, "recitation.webm");
-    formData.append("targetVersesText", combinedVerses);
-    formData.append(
-      "surahName",
-      activeSurah ? (isRtl ? activeSurah.titleAr : activeSurah.title) : `${selectedSura}`
-    );
-    formData.append("startAya", String(startAya));
-    formData.append("endAya", String(endAya));
-    formData.append("lang", lang);
-
-    try {
-      const res = await fetch("/api/review-recitation", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await res.json();
-
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Server failed to evaluate recitation");
-      }
-
-      if (typeof data.score === "undefined") {
-        throw new Error("No response or invalid evaluation received from AI.");
-      }
-
-      setEvaluationResult(data);
-
-      const newReviewEntry = {
-        id: Date.now(),
-        date: new Date().toISOString(),
-        sura: parseInt(selectedSura, 10),
-        surahTitle: activeSurah ? (isRtl ? activeSurah.titleAr : activeSurah.title) : "",
-        startAya,
-        endAya,
-        lang,
-        score: data.score || 0,
-        status: data.status || "",
-        feedback: data.generalFeedback || data.feedback || "",
-      };
-
-      const existingHistory = appData?.recitationHistory || [];
-      updateAppData({
-        recitationHistory: [newReviewEntry, ...existingHistory].slice(0, 50),
-      });
-    } catch (err) {
-      console.error("Evaluation error:", err);
-      setErrorMessage(
-        isRtl
-          ? "حدث خطأ أثناء فحص التلاوة أو أن السيرفر يواجه ضغطاً مؤقتاً. يرجى إعادة المحاولة."
-          : "There was an issue reaching the AI reviewer or the model is temporarily busy. Please try again."
-      );
-    } finally {
-      setIsEvaluating(false);
-    }
-  };
+  }, [pageNumber]);
 
   return (
-    <div className="w-full max-w-2xl mx-auto frosted-card rounded-2xl p-6 flex flex-col gap-6 border border-slate-200 shadow-sm bg-white/90 backdrop-blur-md">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-        <div>
-          <h2 className="text-base font-bold text-slate-900">
-            {isRtl ? "مُراجع التلاوة والتدقيق التجويدي" : "AI Quran Recitation & Tajweed Auditor"}
-          </h2>
-          <p className="text-xs text-slate-500">
-            {isRtl
-              ? "تحقيق دقيق في الحفظ، علامات الإعراب، وأحكام التجويد مع نصائح توجيهية"
-              : "Strict verification of memorization, diacritics, and tajweed rules"}
-          </p>
-        </div>
-        <span className="px-2.5 py-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
-          {isRtl ? "رواية حفص عن عاصم" : "Hafs an Asim"}
-        </span>
-      </div>
+    <img
+      src={src}
+      alt={alt}
+      loading={isPriority ? "eager" : "lazy"}
+      decoding="async"
+      className="w-full h-full object-contain pointer-events-none select-none bg-[#fdfbf7]"
+      onError={async (e) => {
+        if ("caches" in window) {
+          try {
+            const cache = await caches.open(CACHE_NAME);
+            const res = await cache.match(`/images/quran_image/${pageNumber}.png`);
+            if (res) {
+              const blob = await res.blob();
+              const fallbackUrl = URL.createObjectURL(blob);
+              blobUrlCache.set(pageNumber, fallbackUrl);
+              e.currentTarget.src = fallbackUrl;
+            }
+          } catch {}
+        }
+      }}
+    />
+  );
+}
 
-      {/* Surah & Range Selectors */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {/* Surah Selection */}
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-semibold text-slate-700">
-            {isRtl ? "السورة" : "Surah"}
-          </label>
-          <select
-            value={selectedSura}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              const matchedCount = Number(surahs.find((s) => parseInt(s.index, 10) === val)?.count) || 7;
-              setSelectedSura(val);
-              setStartAya(1);
-              setEndAya(Math.min(5, matchedCount));
-              setEvaluationResult(null);
-              setErrorMessage("");
-              setAudioBlob(null);
+export default function Reading() {
+  const { lang } = useLanguage();
+  const isRtl = lang === "ar";
+
+  const [surahs, setSurahs] = useState([]);
+  const [quranPages, setQuranPages] = useState([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [showNav, setShowNav] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // حالة السحب والتحريك
+  const [dragOffset, setDragOffset] = useState(0);
+  const [animatingMode, setAnimatingMode] = useState("idle");
+
+  // Modals state
+  const [isSurahModalOpen, setIsSurahModalOpen] = useState(false);
+  const [isJumpModalOpen, setIsJumpModalOpen] = useState(false);
+  const [surahSearch, setSurahSearch] = useState("");
+
+  // Jump inputs
+  const [pageInput, setPageInput] = useState("");
+  const [jumpSurah, setJumpSurah] = useState(1);
+  const [jumpVerse, setJumpVerse] = useState(1);
+  const [selectedJuz, setSelectedJuz] = useState(1);
+
+  const containerRef = useRef(null);
+  const autoHideTimerRef = useRef(null);
+  const touchStartXRef = useRef(0);
+  const touchDeltaXRef = useRef(0);
+  const wakeLockRef = useRef(null);
+
+  // تجهيز مسبق للـ Blob URLs للصفحة الحالية والصفحات المجاورة (Pre-fetching)
+  useEffect(() => {
+    getPageSource(currentPage);
+    if (currentPage > 1) getPageSource(currentPage - 1);
+    if (currentPage < 604) getPageSource(currentPage + 1);
+  }, [currentPage]);
+
+  // 1. تحميل ملفات JSON محلياً
+  useEffect(() => {
+    async function loadOfflineData() {
+      try {
+        const [surahData, pagesData] = await Promise.all([
+          import("@/data/surah.json"),
+          import("@/data/pagesQuran.json"),
+        ]);
+        setSurahs(surahData.default || surahData);
+        setQuranPages(pagesData.default || pagesData);
+      } catch (err) {
+        console.error("Failed to load local offline Quran data:", err);
+      }
+    }
+    loadOfflineData();
+  }, []);
+
+  // 2. إبقاء شاشة الموبايل مضاءة
+  useEffect(() => {
+    async function activateWakeLock() {
+      try {
+        if ("wakeLock" in navigator && !wakeLockRef.current) {
+          wakeLockRef.current = await navigator.wakeLock.request("screen");
+        }
+      } catch (err) {
+        console.warn("Screen Wake Lock could not be acquired:", err);
+      }
+    }
+
+    activateWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") activateWakeLock();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+    };
+  }, []);
+
+  // 3. مراقبة حالة ملء الشاشة
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = useCallback(async (e) => {
+    if (e) e.stopPropagation();
+    try {
+      if (!document.fullscreenElement) {
+        const el = containerRef.current || document.documentElement;
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (err) {
+      console.warn("Fullscreen toggle error:", err);
+    }
+  }, []);
+
+  // 4. مؤقت إخفاء أشرطة التنقل
+  const triggerNavVisibility = useCallback(() => {
+    setShowNav(true);
+    if (autoHideTimerRef.current) clearTimeout(autoHideTimerRef.current);
+    autoHideTimerRef.current = setTimeout(() => {
+      setShowNav(false);
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    triggerNavVisibility();
+    return () => {
+      if (autoHideTimerRef.current) clearTimeout(autoHideTimerRef.current);
+    };
+  }, [currentPage, triggerNavVisibility]);
+
+  // استخراج تفاصيل الصفحة
+  const pageDetails = useMemo(() => {
+    if (!quranPages.length) return null;
+    return quranPages.find((p) => p.page === currentPage) || quranPages[0];
+  }, [quranPages, currentPage]);
+
+  const currentSurah = useMemo(() => {
+    if (!pageDetails || !surahs.length) return null;
+    const surahNum = pageDetails.start?.surah_number || 1;
+    const formatted = String(surahNum).padStart(3, "0");
+    return surahs.find((s) => s.index === formatted) || null;
+  }, [pageDetails, surahs]);
+
+  const findPageByVerse = useCallback(
+    (surahNum, verseNum) => {
+      if (!quranPages.length) return 1;
+      const match = quranPages.find((p) => {
+        const sStart = p.start.surah_number;
+        const sEnd = p.end.surah_number;
+        const vStart = p.start.verse;
+        const vEnd = p.end.verse;
+
+        if (sStart === sEnd && sStart === surahNum) {
+          return verseNum >= vStart && verseNum <= vEnd;
+        }
+        if (surahNum === sStart) return verseNum >= vStart;
+        if (surahNum === sEnd) return verseNum <= vEnd;
+        return surahNum > sStart && surahNum < sEnd;
+      });
+      return match ? match.page : 1;
+    },
+    [quranPages]
+  );
+
+  // التنقل البرمجي السلس
+  const handleNextPage = useCallback(() => {
+    if (currentPage >= 604 || animatingMode !== "idle") return;
+    const width = containerRef.current?.offsetWidth || window.innerWidth;
+    setAnimatingMode("completing");
+    setDragOffset(width);
+
+    setTimeout(() => {
+      setAnimatingMode("idle");
+      setDragOffset(0);
+      setCurrentPage((prev) => Math.min(604, prev + 1));
+      triggerNavVisibility();
+    }, 250);
+  }, [currentPage, animatingMode, triggerNavVisibility]);
+
+  const handlePrevPage = useCallback(() => {
+    if (currentPage <= 1 || animatingMode !== "idle") return;
+    const width = containerRef.current?.offsetWidth || window.innerWidth;
+    setAnimatingMode("completing");
+    setDragOffset(-width);
+
+    setTimeout(() => {
+      setAnimatingMode("idle");
+      setDragOffset(0);
+      setCurrentPage((prev) => Math.max(1, prev - 1));
+      triggerNavVisibility();
+    }, 250);
+  }, [currentPage, animatingMode, triggerNavVisibility]);
+
+  const handleJumpToJuz = (juzNumber) => {
+    setSelectedJuz(juzNumber);
+    const paddedJuz = String(juzNumber).padStart(2, "0");
+
+    for (const s of surahs) {
+      if (s.juz && Array.isArray(s.juz)) {
+        const targetJuzObj = s.juz.find((j) => j.index === paddedJuz);
+        if (targetJuzObj && targetJuzObj.verse?.start) {
+          const surahNum = parseInt(s.index, 10);
+          const verseNum = parseInt(targetJuzObj.verse.start.replace("verse_", ""), 10) || 1;
+          setCurrentPage(findPageByVerse(surahNum, verseNum));
+          setIsJumpModalOpen(false);
+          return;
+        }
+      }
+    }
+  };
+
+  const handleJumpToPage = () => {
+    setCurrentPage(Math.max(1, Math.min(604, parseInt(pageInput, 10) || 1)));
+    setIsJumpModalOpen(false);
+  };
+
+  const handleJumpToVerse = () => {
+    setCurrentPage(findPageByVerse(jumpSurah, parseInt(jumpVerse, 10) || 1));
+    setIsJumpModalOpen(false);
+  };
+
+  // Touch Drag Events
+  const onTouchStart = (e) => {
+    if (animatingMode !== "idle") return;
+    touchStartXRef.current = e.touches[0].clientX;
+    touchDeltaXRef.current = 0;
+    setAnimatingMode("dragging");
+  };
+
+  const onTouchMove = (e) => {
+    if (animatingMode !== "dragging") return;
+    const currentX = e.touches[0].clientX;
+    let delta = currentX - touchStartXRef.current;
+
+    if (currentPage >= 604 && delta > 0) {
+      delta = delta * 0.15;
+    } else if (currentPage <= 1 && delta < 0) {
+      delta = delta * 0.15;
+    }
+
+    touchDeltaXRef.current = delta;
+    setDragOffset(delta);
+  };
+
+  const onTouchEnd = () => {
+    if (animatingMode !== "dragging") return;
+
+    const delta = touchDeltaXRef.current;
+    const threshold = 55;
+    const containerWidth = containerRef.current?.offsetWidth || window.innerWidth;
+
+    if (delta > threshold && currentPage < 604) {
+      setAnimatingMode("completing");
+      setDragOffset(containerWidth);
+
+      setTimeout(() => {
+        setAnimatingMode("idle");
+        setDragOffset(0);
+        setCurrentPage((prev) => Math.min(604, prev + 1));
+        triggerNavVisibility();
+      }, 250);
+
+    } else if (delta < -threshold && currentPage > 1) {
+      setAnimatingMode("completing");
+      setDragOffset(-containerWidth);
+
+      setTimeout(() => {
+        setAnimatingMode("idle");
+        setDragOffset(0);
+        setCurrentPage((prev) => Math.max(1, prev - 1));
+        triggerNavVisibility();
+      }, 250);
+
+    } else {
+      setAnimatingMode("completing");
+      setDragOffset(0);
+      setTimeout(() => {
+        setAnimatingMode("idle");
+      }, 200);
+    }
+
+    touchDeltaXRef.current = 0;
+  };
+
+  const filteredSurahs = useMemo(() => {
+    if (!surahSearch.trim()) return surahs;
+    const term = surahSearch.toLowerCase().trim();
+    return surahs.filter(
+      (s) =>
+        s.titleAr.includes(term) ||
+        s.title.toLowerCase().includes(term) ||
+        String(parseInt(s.index, 10)) === term
+    );
+  }, [surahs, surahSearch]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`relative w-full overflow-hidden select-none flex flex-col justify-between transition-all duration-300 ${
+        isFullscreen
+          ? "fixed inset-0 z-50 h-screen w-screen rounded-none border-none"
+          : "rounded-3xl border border-amber-900/10 shadow-2xl"
+      }`}
+      onClick={triggerNavVisibility}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      <span className="absolute h-full w-full top-0 left-0 bg-gradient-to-t from-slate-400/60 to-slate-400/0 pointer-events-none z-10"></span>
+
+      {/* 1. الشريط العلوي الذكي */}
+      <header
+        className={`absolute top-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-3 sm:px-4 py-2.5 bg-stone-900/85 backdrop-blur-md text-white flex items-center justify-between shadow-md ${
+          showNav ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0 pointer-events-none"
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsSurahModalOpen(true);
             }}
-            className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:border-amber-500 cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-stone-800 hover:bg-stone-700 border border-stone-600 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
           >
-            {surahs.map((s) => (
-              <option key={s.index} value={parseInt(s.index, 10)}>
-                {parseInt(s.index, 10)}. {isRtl ? s.titleAr : s.title}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* From Verse Stepper */}
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-semibold text-slate-700">
-            {isRtl ? "من آية" : "From Verse"}
-          </label>
-          <div className="flex items-center justify-between h-10 bg-slate-50 border border-slate-200 rounded-xl px-1">
-            <button
-              type="button"
-              onClick={handleDecrementStart}
-              disabled={startAya <= 1}
-              aria-label={isRtl ? "تقليل آية البداية" : "Decrease start verse"}
-              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
-            >
-              −
-            </button>
-            <input
-              type="text"
-              readOnly
-              tabIndex={-1}
-              value={startAya}
-              aria-label={isRtl ? "من آية" : "From Verse"}
-              className="w-12 text-center bg-transparent border-none py-0 font-mono text-slate-900 font-bold text-xs focus:outline-none select-none cursor-default"
-            />
-            <button
-              type="button"
-              onClick={handleIncrementStart}
-              disabled={startAya >= endAya}
-              aria-label={isRtl ? "زيادة آية البداية" : "Increase start verse"}
-              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
-            >
-              +
-            </button>
-          </div>
-        </div>
-
-        {/* To Verse Stepper */}
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-semibold text-slate-700">
-            {isRtl ? "إلى آية" : "To Verse"}
-          </label>
-          <div className="flex items-center justify-between h-10 bg-slate-50 border border-slate-200 rounded-xl px-1">
-            <button
-              type="button"
-              onClick={handleDecrementEnd}
-              disabled={endAya <= startAya}
-              aria-label={isRtl ? "تقليل آية النهاية" : "Decrease end verse"}
-              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
-            >
-              −
-            </button>
-            <input
-              type="text"
-              readOnly
-              tabIndex={-1}
-              value={endAya}
-              aria-label={isRtl ? "إلى آية" : "To Verse"}
-              className="w-12 text-center bg-transparent border-none py-0 font-mono text-slate-900 font-bold text-xs focus:outline-none select-none cursor-default"
-            />
-            <button
-              type="button"
-              onClick={handleIncrementEnd}
-              disabled={endAya >= maxAyas}
-              aria-label={isRtl ? "زيادة آية النهاية" : "Increase end verse"}
-              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200/80 active:bg-slate-300 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer font-bold text-base select-none"
-            >
-              +
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Target Quranic Text Preview */}
-      <div className="p-4 bg-[#fdfbf7] border border-amber-200/60 rounded-xl max-h-56 overflow-y-auto">
-        <span className="text-[10px] uppercase font-bold text-amber-700 block mb-2">
-          {isRtl ? "النص القرآني المعتمد المطلوب:" : "Target Quranic Text to Recite:"}
-        </span>
-        {isLoadingVerses ? (
-          <p className="text-xs text-slate-400 animate-pulse">
-            {isRtl ? "جاري تحميل الآيات..." : "Loading verses..."}
-          </p>
-        ) : (
-          <div
-            className="text-2xl leading-loose text-slate-900 font-['Amiri_Quran',_serif] text-right"
-            dir="rtl"
-          >
-            {targetVerses.map((v) => (
-              <span key={v.aya} className="inline mx-0.5">
-                {v.text} <span className="text-amber-600 font-sans text-sm font-bold">﴿{v.aya}﴾</span>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Recording Actions */}
-      <div className="flex flex-col items-center justify-center gap-4 py-2">
-        <div className="flex flex-wrap items-center justify-center gap-4">
-          {!isRecording ? (
-            <button
-              type="button"
-              onClick={startRecording}
-              className="flex items-center gap-2 px-6 py-3 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-full shadow-md transition active:scale-95 cursor-pointer"
-            >
-              <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" />
-              <span>{isRtl ? "بدء التسميع والتسجيل" : "Start Reciting"}</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopRecording}
-              className="flex items-center gap-2 px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-full shadow-md transition active:scale-95 cursor-pointer"
-            >
-              <span className="w-2.5 h-2.5 bg-rose-500 rounded-xs" />
-              <span>
-                {isRtl ? "إيقاف التسجيل" : "Stop Recording"} ({recordingTime}s)
-              </span>
-            </button>
-          )}
-
-          {audioBlob && !isRecording && (
-            <button
-              type="button"
-              onClick={handleEvaluate}
-              disabled={isEvaluating}
-              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-xs font-bold rounded-full shadow-md transition active:scale-95 cursor-pointer flex items-center gap-2"
-            >
-              {isEvaluating ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>{isRtl ? "جاري التدقيق الحرفي والتجويدي..." : "Auditing Recitation..."}</span>
-                </>
-              ) : (
-                <span>{isRtl ? "إرسال للتحكيم والتدقيق" : "Submit for Evaluation"}</span>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Error Alert Message */}
-      {errorMessage && (
-        <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 flex items-start justify-between gap-3 text-rose-800">
-          <div className="flex items-start gap-2.5">
-            <svg className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
-                clipRule="evenodd"
-              />
+            <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
             </svg>
-            <div className="flex flex-col">
-              <span className="text-xs font-bold">
-                {isRtl ? "تنبيه" : "Evaluation Notice"}
-              </span>
-              <span className="text-xs text-rose-700 mt-0.5">{errorMessage}</span>
+            <span className="truncate max-w-[90px] sm:max-w-none">
+              {currentSurah ? (isRtl ? currentSurah.titleAr : currentSurah.title) : "فهرس السور"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+            className="p-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white border border-stone-600 rounded-xl text-xs transition active:scale-95 cursor-pointer flex items-center justify-center"
+            title={isFullscreen ? (isRtl ? "إلغاء ملء الشاشة" : "Exit Fullscreen") : (isRtl ? "شاشة كاملة" : "Fullscreen")}
+          >
+            {isFullscreen ? (
+              <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9L4 4m0 0v5m0-5h5m6 6l5-5m0 0h-5m5 0v5m-6 6l5 5m0 0v-5m0 5h-5m-6-6l-5 5m0 0h5m-5 0v-5" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+              </svg>
+            )}
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center text-center">
+          <span className="text-sm font-bold text-amber-400 font-['Amiri_Quran',_serif]">
+            {pageDetails?.start?.name?.ar || ""}
+          </span>
+          <span className="text-[10px] text-stone-300 font-medium">
+            {isRtl ? `صفحة ${currentPage} من 604` : `Page ${currentPage} / 604`}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsJumpModalOpen(true);
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer shadow-xs shrink-0"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span>{isRtl ? "انتقال" : "Jump"}</span>
+        </button>
+      </header>
+
+      {/* أزرار الأسهم للشاشات الكبيرة */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          handlePrevPage();
+        }}
+        disabled={currentPage <= 1 || animatingMode !== "idle"}
+        aria-label="Previous Page"
+        className="hidden md:flex absolute right-4 top-1/2 -translate-y-1/2 z-20 w-11 h-11 items-center justify-center rounded-full bg-stone-900/40 hover:bg-stone-900/75 text-white backdrop-blur-xs transition disabled:opacity-0 cursor-pointer"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          handleNextPage();
+        }}
+        disabled={currentPage >= 604 || animatingMode !== "idle"}
+        aria-label="Next Page"
+        className="hidden md:flex absolute left-4 top-1/2 -translate-y-1/2 z-20 w-11 h-11 items-center justify-center rounded-full bg-stone-900/40 hover:bg-stone-900/75 text-white backdrop-blur-xs transition disabled:opacity-0 cursor-pointer"
+      >
+        <svg className="w-6 h-6 rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+
+      {/* 2. حاوية العرض مع استدعاء صفحات المصحف الداعمة للأوفلاين بدون وميض */}
+      <div className="relative flex-1 flex items-center justify-center overflow-hidden touch-pan-y">
+        <div
+          className={`relative w-full h-full flex items-center justify-center ${
+            animatingMode === "completing"
+              ? "transition-transform duration-250 ease-out"
+              : "transition-none"
+          }`}
+          style={{
+            transform: `translate3d(${dragOffset}px, 0, 0)`,
+            willChange: "transform",
+          }}
+        >
+          {/* الصفحة القادمة (Next Page): تقع يسار الشاشة (-100%) */}
+          {currentPage < 604 && (
+            <div
+              key={`next-${currentPage + 1}`}
+              className="absolute inset-0 flex items-center justify-center p-2 sm:p-5 pointer-events-none"
+              style={{ transform: "translate3d(-100%, 0, 0)" }}
+            >
+              <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
+                <QuranPageImage
+                  pageNumber={currentPage + 1}
+                  alt={`Quran Page ${currentPage + 1}`}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* الصفحة الحالية (Current Page): تقع في المركز (0%) */}
+          <div
+            key={`current-${currentPage}`}
+            className="relative w-full h-full flex items-center justify-center p-2 sm:p-5"
+          >
+            <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
+              <QuranPageImage
+                pageNumber={currentPage}
+                isPriority={true}
+                alt={`Quran Page ${currentPage}`}
+              />
             </div>
           </div>
 
-          {audioBlob && !isEvaluating && (
-            <button
-              type="button"
-              onClick={handleEvaluate}
-              className="shrink-0 px-3 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg transition active:scale-95 cursor-pointer"
+          {/* الصفحة السابقة (Previous Page): تقع يمين الشاشة (+100%) */}
+          {currentPage > 1 && (
+            <div
+              key={`prev-${currentPage - 1}`}
+              className="absolute inset-0 flex items-center justify-center p-2 sm:p-5 pointer-events-none"
+              style={{ transform: "translate3d(100%, 0, 0)" }}
             >
-              {isRtl ? "إعادة المحاولة" : "Retry"}
-            </button>
+              <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
+                <QuranPageImage
+                  pageNumber={currentPage - 1}
+                  alt={`Quran Page ${currentPage - 1}`}
+                />
+              </div>
+            </div>
           )}
+        </div>
+      </div>
+
+      {/* 3. الشريط السفلي الذكي */}
+      <footer
+        className={`absolute bottom-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-4 py-2.5 bg-stone-900/85 backdrop-blur-md text-white flex items-center justify-between shadow-lg ${
+          showNav ? "translate-y-0 opacity-100" : "translate-y-full opacity-0 pointer-events-none"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handlePrevPage();
+          }}
+          disabled={currentPage <= 1 || animatingMode !== "idle"}
+          className="flex items-center gap-1 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 rounded-xl text-xs font-semibold cursor-pointer shrink-0"
+        >
+          <span>{isRtl ? "السابقة" : "Prev"}</span>
+        </button>
+
+        <div
+          className="flex items-center gap-2 max-w-[220px] w-full mx-2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="range"
+            min={1}
+            max={604}
+            value={currentPage}
+            onChange={(e) => setCurrentPage(parseInt(e.target.value, 10))}
+            className="w-full accent-amber-500 h-1.5 bg-stone-700 rounded-lg cursor-pointer"
+          />
+        </div>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleNextPage();
+          }}
+          disabled={currentPage >= 604 || animatingMode !== "idle"}
+          className="flex items-center gap-1 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 rounded-xl text-xs font-semibold cursor-pointer shrink-0"
+        >
+          <span>{isRtl ? "التالية" : "Next"}</span>
+        </button>
+      </footer>
+
+      {/* مودال فهرس السور */}
+      {isSurahModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setIsSurahModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-3xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-800">{isRtl ? "فهرس سور القرآن الكريم" : "Surah Index"}</h3>
+              <button
+                type="button"
+                onClick={() => setIsSurahModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3 border-b border-slate-100">
+              <input
+                type="text"
+                value={surahSearch}
+                onChange={(e) => setSurahSearch(e.target.value)}
+                placeholder={isRtl ? "ابحث باسم السورة أو رقمها..." : "Search Surah..."}
+                className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 p-2">
+              {filteredSurahs.map((s) => {
+                const sNum = parseInt(s.index, 10);
+                return (
+                  <div
+                    key={s.index}
+                    onClick={() => {
+                      const p = parseInt(s.pages, 10) || findPageByVerse(sNum, 1);
+                      setCurrentPage(p);
+                      setIsSurahModalOpen(false);
+                    }}
+                    className="p-3 flex items-center justify-between hover:bg-amber-50/70 rounded-2xl cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-8 h-8 flex items-center justify-center rounded-xl bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold">
+                        {sNum}
+                      </span>
+                      <div>
+                        <span className="text-sm font-bold text-slate-800 font-['Amiri_Quran',_serif] block">
+                          {isRtl ? s.titleAr : s.title}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {s.type === "Madaniyah" ? (isRtl ? "مدنية" : "Madani") : (isRtl ? "مكية" : "Makki")} • {s.count} {isRtl ? "آية" : "verses"}
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg">
+                      {isRtl ? `ص ${s.pages}` : `p. ${s.pages}`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Evaluation Results */}
-      {evaluationResult && (
-        <div className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 flex flex-col gap-4 animate-in fade-in duration-300">
-          {/* Status Header */}
-          <div className="flex items-center justify-between border-b border-slate-200/80 pb-3">
-            <span className="text-xs font-bold text-slate-800">
-              {isRtl ? "تقرير التحكيم والتقييم" : "Evaluation Report"}
-            </span>
-            <span
-              className={`text-xs px-3 py-1 rounded-full font-bold ${
-                evaluationResult.score >= 90
-                  ? "bg-emerald-100 text-emerald-800"
-                  : evaluationResult.score >= 75
-                  ? "bg-blue-100 text-blue-800"
-                  : evaluationResult.score >= 60
-                  ? "bg-amber-100 text-amber-800"
-                  : "bg-rose-100 text-rose-800"
-              }`}
-            >
-              {evaluationResult.score}% - {evaluationResult.status}
-            </span>
-          </div>
-
-          {/* Transcribed Text Detected by AI */}
-          {evaluationResult.transcribedText && (
-            <div className="p-3 bg-white rounded-xl border border-slate-200/80 flex flex-col gap-1">
-              <span className="text-[11px] font-bold text-slate-500">
-                {isRtl ? "النص المنطوق كما سُمع بالتشكيل:" : "Spoken Text as Heard:"}
-              </span>
-              <p
-                className="text-sm font-['Amiri_Quran',_serif] text-slate-800 leading-relaxed text-right"
-                dir="rtl"
+      {/* مودال أدوات الانتقال السريع */}
+      {isJumpModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setIsJumpModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-3xl w-full max-w-sm flex flex-col p-5 gap-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-bold text-slate-800">{isRtl ? "انتقال سريع في المصحف" : "Quick Jump"}</h3>
+              <button
+                type="button"
+                onClick={() => setIsJumpModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold cursor-pointer"
               >
-                {evaluationResult.transcribedText}
-              </p>
+                ✕
+              </button>
             </div>
-          )}
 
-          {/* General Feedback */}
-          <div className="text-xs text-slate-700 leading-relaxed bg-indigo-50/60 p-3 rounded-xl border border-indigo-100">
-            {evaluationResult.generalFeedback || evaluationResult.feedback}
-          </div>
-
-          {/* Detected Mistakes List */}
-          {evaluationResult.mistakes && evaluationResult.mistakes.length > 0 ? (
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-bold text-rose-600 flex items-center gap-1">
-                <span>⚠️</span>
-                <span>{isRtl ? "الأخطاء المرصودة واللحن:" : "Identified Mistakes:"}</span>
-              </span>
-              <div className="flex flex-col gap-2">
-                {evaluationResult.mistakes.map((m, idx) => (
-                  <div
-                    key={idx}
-                    className="p-3 text-xs bg-white border border-rose-100 rounded-xl flex flex-col gap-1.5 shadow-2xs"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="line-through text-rose-600 font-bold font-['Amiri_Quran',_serif] text-sm">
-                          {m.wordSpoken || m.word}
-                        </span>
-                        <span className="text-slate-400 font-sans">←</span>
-                        <span className="text-emerald-700 font-bold font-['Amiri_Quran',_serif] text-sm">
-                          {m.wordCorrect || m.correction}
-                        </span>
-                      </div>
-                      <span className="text-[10px] px-2 py-0.5 font-semibold bg-rose-50 text-rose-700 rounded-md border border-rose-200/60">
-                        {m.type || m.reason || (isRtl ? "لحن" : "Mistake")}
-                      </span>
-                    </div>
-
-                    {m.explanation && (
-                      <p className="text-[11px] text-slate-600">
-                        <strong className="text-slate-800">{isRtl ? "السبب: " : "Why: "}</strong>
-                        {m.explanation}
-                      </p>
-                    )}
-
-                    {m.howToFix && (
-                      <p className="text-[11px] text-emerald-800 bg-emerald-50/70 p-2 rounded-lg border border-emerald-100">
-                        <strong>{isRtl ? "💡 كيف تصححها: " : "💡 How to Fix: "}</strong>
-                        {m.howToFix}
-                      </p>
-                    )}
-                  </div>
-                ))}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-bold text-slate-700">{isRtl ? "إلى الصفحة (1 - 604):" : "To Page (1-604):"}</label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={604}
+                  value={pageInput}
+                  onChange={(e) => setPageInput(e.target.value)}
+                  placeholder="مثال: 120"
+                  className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleJumpToPage}
+                  className="px-4 py-2 bg-stone-800 hover:bg-stone-700 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
+                >
+                  {isRtl ? "اذهب" : "Go"}
+                </button>
               </div>
             </div>
-          ) : (
-            <div className="p-3 bg-emerald-50 text-emerald-800 rounded-xl text-xs font-semibold border border-emerald-200/60 flex items-center gap-2">
-              <span>✓</span>
-              <span>
-                {isRtl
-                  ? "ما شاء الله، قراءة متقنة خالية من الأخطاء في الكلمات والحركات."
-                  : "Excellent! No major mispronunciations or diacritic errors detected."}
-              </span>
-            </div>
-          )}
 
-          {/* Tajweed Observations */}
-          {evaluationResult.tajweedObservations && evaluationResult.tajweedObservations.length > 0 && (
-            <div className="flex flex-col gap-1.5 p-3 bg-white rounded-xl border border-slate-200/80">
-              <span className="text-[11px] font-bold text-indigo-700">
-                {isRtl ? "ملاحظات التجويد والمخارج:" : "Tajweed & Articulation Notes:"}
-              </span>
-              <ul className="list-disc list-inside text-xs text-slate-600 flex flex-col gap-1">
-                {evaluationResult.tajweedObservations.map((obs, i) => (
-                  <li key={i}>{obs}</li>
-                ))}
-              </ul>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-bold text-slate-700">{isRtl ? "إلى الجزء (1 - 30):" : "To Juz (1-30):"}</label>
+              <div className="flex gap-2">
+                <select
+                  value={selectedJuz}
+                  onChange={(e) => setSelectedJuz(parseInt(e.target.value, 10))}
+                  className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                >
+                  {Array.from({ length: 30 }, (_, i) => i + 1).map((j) => (
+                    <option key={j} value={j}>
+                      {isRtl ? `الجزء ${j}` : `Juz ${j}`}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => handleJumpToJuz(selectedJuz)}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
+                >
+                  {isRtl ? "اذهب" : "Go"}
+                </button>
+              </div>
             </div>
-          )}
 
-          {/* Next Time Advice */}
-          {evaluationResult.nextTimeAdvice && evaluationResult.nextTimeAdvice.length > 0 && (
-            <div className="flex flex-col gap-1.5 p-3 bg-amber-50/50 rounded-xl border border-amber-200/60">
-              <span className="text-[11px] font-bold text-amber-800">
-                {isRtl ? "نصائح للتسميع القادم:" : "Tips for Next Recitation:"}
-              </span>
-              <ul className="list-disc list-inside text-xs text-slate-700 flex flex-col gap-1">
-                {evaluationResult.nextTimeAdvice.map((tip, i) => (
-                  <li key={i}>{tip}</li>
-                ))}
-              </ul>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-bold text-slate-700">{isRtl ? "إلى سورة وآية محددة:" : "To Surah & Verse:"}</label>
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={jumpSurah}
+                  onChange={(e) => setJumpSurah(parseInt(e.target.value, 10))}
+                  className="px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                >
+                  {surahs.map((s) => (
+                    <option key={s.index} value={parseInt(s.index, 10)}>
+                      {parseInt(s.index, 10)}. {isRtl ? s.titleAr : s.title}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={1}
+                  value={jumpVerse}
+                  onChange={(e) => setJumpVerse(e.target.value)}
+                  placeholder={isRtl ? "رقم الآية" : "Verse #"}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleJumpToVerse}
+                className="w-full mt-1 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
+              >
+                {isRtl ? "انتقال إلى الآية" : "Go to Verse"}
+              </button>
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>
