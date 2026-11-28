@@ -2,8 +2,80 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import Image from "next/image";
 import { useLanguage } from "@/context/LanguageContext";
+
+const CACHE_NAME = "quran-pages-cache";
+
+// مكوّن فرعي لعرض صفحة المصحف بدعم مباشر للكاش والـ Blob Fallback
+function QuranPageImage({ pageNumber, isPriority = false, alt = "" }) {
+  const [imgSrc, setImgSrc] = useState(`/images/quran_image/${pageNumber}.png`);
+
+  useEffect(() => {
+    let objectUrl = null;
+    let isMounted = true;
+
+    async function resolveOfflineImage() {
+      const defaultUrl = `/images/quran_image/${pageNumber}.png`;
+
+      // إذا كان الجهاز متصلاً بالإنترنت، نعتمد المسار العادي أولاً
+      if (typeof window !== "undefined" && navigator.onLine) {
+        setImgSrc(defaultUrl);
+        return;
+      }
+
+      // إذا كان الجهاز Offline، نبحث مباشرة في CacheStorage وننشئ Blob URL محلي
+      if (typeof window !== "undefined" && "caches" in window) {
+        try {
+          const cache = await caches.open(CACHE_NAME);
+          const cachedResponse = await cache.match(defaultUrl);
+
+          if (cachedResponse && isMounted) {
+            const blob = await cachedResponse.blob();
+            objectUrl = URL.createObjectURL(blob);
+            setImgSrc(objectUrl);
+            return;
+          }
+        } catch (e) {
+          console.warn(`Cache lookup failed for page ${pageNumber}:`, e);
+        }
+      }
+
+      if (isMounted) setImgSrc(defaultUrl);
+    }
+
+    resolveOfflineImage();
+
+    return () => {
+      isMounted = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [pageNumber]);
+
+  return (
+    <img
+      src={imgSrc}
+      alt={alt}
+      loading={isPriority ? "eager" : "lazy"}
+      decoding="async"
+      className="w-full h-full object-contain pointer-events-none select-none"
+      onError={async (e) => {
+        // Fallback أخير عند فشل تحميل الصورة العادية
+        if ("caches" in window) {
+          try {
+            const cache = await caches.open(CACHE_NAME);
+            const res = await cache.match(`/images/quran_image/${pageNumber}.png`);
+            if (res) {
+              const blob = await res.blob();
+              e.currentTarget.src = URL.createObjectURL(blob);
+            }
+          } catch {}
+        }
+      }}
+    />
+  );
+}
 
 export default function Reading() {
   const { lang } = useLanguage();
@@ -17,7 +89,7 @@ export default function Reading() {
 
   // حالة السحب والتحريك
   const [dragOffset, setDragOffset] = useState(0);
-  const [animatingMode, setAnimatingMode] = useState("idle"); // "idle" | "dragging" | "completing"
+  const [animatingMode, setAnimatingMode] = useState("idle");
 
   // Modals state
   const [isSurahModalOpen, setIsSurahModalOpen] = useState(false);
@@ -235,7 +307,6 @@ export default function Reading() {
     const currentX = e.touches[0].clientX;
     let delta = currentX - touchStartXRef.current;
 
-    // مقاومة عند أطراف المصحف
     if (currentPage >= 604 && delta > 0) {
       delta = delta * 0.15;
     } else if (currentPage <= 1 && delta < 0) {
@@ -250,23 +321,20 @@ export default function Reading() {
     if (animatingMode !== "dragging") return;
 
     const delta = touchDeltaXRef.current;
-    const threshold = 55; // حساسية استجابة الانتقال
+    const threshold = 55;
     const containerWidth = containerRef.current?.offsetWidth || window.innerWidth;
 
-    // 1. الانتقال للصفحة التالية (سحب من اليسار إلى اليمين)
     if (delta > threshold && currentPage < 604) {
       setAnimatingMode("completing");
       setDragOffset(containerWidth);
 
       setTimeout(() => {
-        // نلغي الـ transition أولاً قبل التحديث لمنع الوميض أو تكرار الحركة
         setAnimatingMode("idle");
         setDragOffset(0);
         setCurrentPage((prev) => Math.min(604, prev + 1));
         triggerNavVisibility();
       }, 260);
 
-    // 2. الانتقال للصفحة السابقة (سحب من اليمين إلى اليسار)
     } else if (delta < -threshold && currentPage > 1) {
       setAnimatingMode("completing");
       setDragOffset(-containerWidth);
@@ -278,7 +346,6 @@ export default function Reading() {
         triggerNavVisibility();
       }, 260);
 
-    // 3. عدم تجاوز العتبة -> ارتداد ناعم للموضع الأصلي
     } else {
       setAnimatingMode("completing");
       setDragOffset(0);
@@ -316,7 +383,7 @@ export default function Reading() {
     >
       <span className="absolute h-full w-full top-0 left-0 bg-gradient-to-t from-slate-400/60 to-slate-400/0 pointer-events-none z-10"></span>
 
-      {/* الشريط العلوي الذكي */}
+      {/* 1. الشريط العلوي الذكي */}
       <header
         className={`absolute top-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-3 sm:px-4 py-2.5 bg-stone-900/85 backdrop-blur-md text-white flex items-center justify-between shadow-md ${
           showNav ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0 pointer-events-none"
@@ -413,7 +480,7 @@ export default function Reading() {
         </svg>
       </button>
 
-      {/* 2. حاوية العرض ثلاثية الشرائح المستقرة لمنع الأنيميشن المزدوج */}
+      {/* 2. حاوية العرض مع استدعاء صفحات المصحف الداعمة للأوفلاين */}
       <div className="relative flex-1 flex items-center justify-center overflow-hidden touch-pan-y">
         <div
           className={`relative w-full h-full flex items-center justify-center ${
@@ -433,12 +500,9 @@ export default function Reading() {
               style={{ transform: "translate3d(-100%, 0, 0)" }}
             >
               <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
-                <Image
-                  src={`/images/quran_image/${currentPage + 1}.png`}
+                <QuranPageImage
+                  pageNumber={currentPage + 1}
                   alt={`Quran Page ${currentPage + 1}`}
-                  fill
-                  unoptimized
-                  className="object-contain"
                 />
               </div>
             </div>
@@ -447,13 +511,10 @@ export default function Reading() {
           {/* الصفحة الحالية (Current Page): تقع في المركز (0%) */}
           <div className="relative w-full h-full flex items-center justify-center p-2 sm:p-5">
             <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
-              <Image
-                src={`/images/quran_image/${currentPage}.png`}
+              <QuranPageImage
+                pageNumber={currentPage}
+                isPriority={true}
                 alt={`Quran Page ${currentPage}`}
-                fill
-                priority
-                unoptimized
-                className="object-contain pointer-events-none"
               />
             </div>
           </div>
@@ -465,12 +526,9 @@ export default function Reading() {
               style={{ transform: "translate3d(100%, 0, 0)" }}
             >
               <div className="relative w-full h-full max-w-[550px] aspect-[62/100] shadow-2xl rounded-sm overflow-hidden bg-[#fdfbf7] border border-stone-200">
-                <Image
-                  src={`/images/quran_image/${currentPage - 1}.png`}
+                <QuranPageImage
+                  pageNumber={currentPage - 1}
                   alt={`Quran Page ${currentPage - 1}`}
-                  fill
-                  unoptimized
-                  className="object-contain"
                 />
               </div>
             </div>
@@ -478,7 +536,7 @@ export default function Reading() {
         </div>
       </div>
 
-      {/* الشريط السفلي الذكي */}
+      {/* 3. الشريط السفلي الذكي */}
       <footer
         className={`absolute bottom-0 inset-x-0 z-30 transition-all duration-300 ease-in-out px-4 py-2.5 bg-stone-900/85 backdrop-blur-md text-white flex items-center justify-between shadow-lg ${
           showNav ? "translate-y-0 opacity-100" : "translate-y-full opacity-0 pointer-events-none"

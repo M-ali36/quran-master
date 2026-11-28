@@ -1,112 +1,271 @@
 // src/components/InstallPrompt.js
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useLanguage } from "@/context/LanguageContext";
+
+const CACHE_NAME = "quran-pages-cache";
+const TOTAL_PAGES = 604;
+const CONCURRENT_DOWNLOADS = 5; // عدد الصور التي يتم تحميلها بالتوازي لتفادي حظر الشبكة
 
 export default function InstallPrompt() {
   const { lang } = useLanguage();
+  const isRtl = lang === "ar";
+
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isVisible, setIsVisible] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isIos, setIsIos] = useState(false);
 
+  // حالات الكاش والتحميل
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [isAllCached, setIsAllCached] = useState(false);
+
+  const abortControllerRef = useRef(null);
+
+  // 1. فحص الصفحات المتبقية وتحميلها بنظام Concurrency Pool
+  const syncOfflineQuranPages = useCallback(async () => {
+    if (typeof window === "undefined" || !("caches" in window)) return;
+
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      const keys = await cache.keys();
+      
+      // جمع مسارات الصفحات المخزنة بالفعل
+      const cachedPaths = new Set(keys.map((k) => new URL(k.url).pathname));
+
+      const missingPages = [];
+      for (let p = 1; p <= TOTAL_PAGES; p++) {
+        const path = `/images/quran_image/${p}.png`;
+        if (!cachedPaths.has(path)) {
+          missingPages.push(p);
+        }
+      }
+
+      let completedCount = TOTAL_PAGES - missingPages.length;
+      setDownloadProgress(Math.round((completedCount / TOTAL_PAGES) * 100));
+
+      if (missingPages.length === 0) {
+        setIsAllCached(true);
+        setIsDownloading(false);
+        return;
+      }
+
+      setIsDownloading(true);
+      abortControllerRef.current = new AbortController();
+      const signal = abortControllerRef.current.signal;
+
+      // معالجة الصفحات الناقصة دفعات منتظمة
+      for (let i = 0; i < missingPages.length; i += CONCURRENT_DOWNLOADS) {
+        if (signal.aborted) break;
+
+        const batch = missingPages.slice(i, i + CONCURRENT_DOWNLOADS);
+        await Promise.all(
+          batch.map(async (pageNum) => {
+            const url = `/images/quran_image/${pageNum}.png`;
+            try {
+              const res = await fetch(url, {
+                signal,
+                cache: "reload",
+              });
+              if (res.ok) {
+                await cache.put(url, res);
+                completedCount += 1;
+              }
+            } catch (err) {
+              if (err.name !== "AbortError") {
+                console.warn(`Failed to cache Quran page ${pageNum}:`, err);
+              }
+            }
+          })
+        );
+
+        // تحديث النسبة المئوية بعد كل دفعة لتفادي فرط إعادة التصيير (Re-renders)
+        setDownloadProgress(Math.round((completedCount / TOTAL_PAGES) * 100));
+      }
+
+      if (completedCount >= TOTAL_PAGES) {
+        setIsAllCached(true);
+      }
+    } catch (err) {
+      console.error("Cache sync error:", err);
+    } finally {
+      setIsDownloading(false);
+    }
+  }, []);
+
+  // 2. التحقق من بيئة التشغيل وأحداث التثبيت
   useEffect(() => {
-    // Check if app is already running in standalone mode (installed)
-    const isStandalone =
+    if (typeof window === "undefined") return;
+
+    // تسجيل الـ Service Worker
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .catch((err) => console.error("SW Registration failed:", err));
+    }
+
+    const standaloneMode =
       window.matchMedia("(display-mode: standalone)").matches ||
       window.navigator.standalone === true;
 
-    if (isStandalone) return;
+    setIsStandalone(standaloneMode);
 
-    // Check if the user previously dismissed the prompt during this session
+    // كشف أجهزة iOS
+    const userAgent = window.navigator.userAgent.toLowerCase();
+    const isIosDevice = /iphone|ipad|ipod/.test(userAgent) && !window.MSStream;
+    setIsIos(isIosDevice);
+
+    // فحص حالة الكاش عند الفتح
+    if ("caches" in window) {
+      caches.open(CACHE_NAME).then(async (cache) => {
+        const keys = await cache.keys();
+        const count = keys.filter((k) => k.url.includes("/images/quran_image/")).length;
+        if (count >= TOTAL_PAGES) {
+          setIsAllCached(true);
+        } else if (standaloneMode) {
+          // إذا كان التطبيق مثبتاً والصفحات غير مكتملة، نبدأ استكمالها فوراً
+          setIsVisible(true);
+          syncOfflineQuranPages();
+        }
+      });
+    }
+
+    // إذا كان التطبيق مثبتاً بالفعل وكل شيء مخزن، لا نظهر الإشعار
+    if (standaloneMode) return;
+
     const isDismissed = sessionStorage.getItem("pwa_install_dismissed");
     if (isDismissed) return;
 
+    // متصفحات Chromium (Android, Windows, Mac)
     const handleBeforeInstallPrompt = (e) => {
-      // Prevent automatic browser mini-infobar
       e.preventDefault();
       setDeferredPrompt(e);
       setIsVisible(true);
     };
 
-    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    // عند اكتمال التثبيت الفعلي
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsVisible(true);
+      syncOfflineQuranPages();
+    };
 
-    // Register service worker if supported
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register("/sw.js")
-        .catch((err) => console.error("SW registration error:", err));
-    }
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("appinstalled", handleAppInstalled);
 
     return () => {
       window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
-  }, []);
+  }, [syncOfflineQuranPages]);
 
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-
-    // Show native browser install sheet
-    deferredPrompt.prompt();
-
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === "accepted") {
-      setDeferredPrompt(null);
-      setIsVisible(false);
+  // 3. نقرة زر التثبيت / التحميل
+  const handleActionClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === "accepted") {
+        setDeferredPrompt(null);
+        syncOfflineQuranPages();
+      }
+    } else {
+      // إذا كان الزر مخصصاً لتنزيل الصفحات الناقصة
+      syncOfflineQuranPages();
     }
   };
 
   const handleDismiss = () => {
+    if (isDownloading && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     setIsVisible(false);
     sessionStorage.setItem("pwa_install_dismissed", "true");
   };
 
+  if (!isVisible && (isAllCached || isStandalone)) return null;
   if (!isVisible) return null;
 
   return (
     <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:max-w-md z-50 animate-in fade-in slide-in-from-bottom-5 duration-300">
-      <div className="p-4 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-xl flex items-center justify-between gap-3">
-        {/* App Icon & Text */}
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shrink-0 font-bold text-xs shadow-sm">
-            قرآن
+      <div className="p-4 rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col gap-3">
+        {/* رأس البطاقة */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-slate-900 text-amber-400 border border-amber-500/20 flex items-center justify-center shrink-0 font-bold text-xs shadow-sm font-['Amiri_Quran',_serif]">
+              قرآن
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                {isDownloading
+                  ? isRtl ? "جاري تحميل صفحات المصحف..." : "Downloading Quran Pages..."
+                  : isAllCached
+                  ? isRtl ? "المصحف جاهز أوفلاين" : "Quran Ready Offline"
+                  : isRtl ? "تثبيت التطبيق والمصحف" : "Install App & Quran"}
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                {isDownloading
+                  ? isRtl ? `تم حفظ ${downloadProgress}% من الصفحات` : `${downloadProgress}% cached`
+                  : isAllCached
+                  ? isRtl ? "جميع الصفحات الـ 604 متوفرة بدون إنترنت" : "All 604 pages available offline"
+                  : isIos && !isStandalone
+                  ? isRtl ? "اضغط على زر المشاركة ثم «إضافة للشاشة الرئيسية»" : "Tap Share then 'Add to Home Screen'"
+                  : isRtl ? "تصفح سريع واستماع بدون إنترنت" : "Fast reading & offline audio"}
+              </span>
+            </div>
           </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-              {lang === "ar" ? "تثبيت التطبيق" : "Install App"}
-            </span>
-            <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-              {lang === "ar"
-                ? "للاستماع والحفظ بدون إنترنت وسرعة أكبر"
-                : "Listen & memorize offline with faster access"}
-            </span>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {/* زر الإغلاق */}
+            <button
+              type="button"
+              onClick={handleDismiss}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              aria-label="Dismiss"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                <path
+                  fillRule="evenodd"
+                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+
+            {/* زر الإجراء الأساسي */}
+            {!isDownloading && !isAllCached && !isIos && (
+              <button
+                type="button"
+                onClick={handleActionClick}
+                className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+              >
+                {deferredPrompt
+                  ? isRtl ? "تثبيت" : "Install"
+                  : isRtl ? "تحميل الصفحات" : "Download Pages"}
+              </button>
+            )}
+
+            {isAllCached && (
+              <span className="w-7 h-7 flex items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 text-xs font-bold">
+                ✓
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={handleDismiss}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-            aria-label="Dismiss"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleInstallClick}
-            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
-          >
-            {lang === "ar" ? "تثبيت" : "Install"}
-          </button>
-        </div>
+        {/* شريط تقدم التنزيل الفعلي */}
+        {isDownloading && (
+          <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+            <div
+              className="bg-amber-500 h-full transition-all duration-300 rounded-full"
+              style={{ width: `${downloadProgress}%` }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
